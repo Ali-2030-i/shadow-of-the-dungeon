@@ -1,0 +1,764 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Shadow of the Dungeon: Ascension</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #050505;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+
+        canvas {
+            display: block;
+        }
+    </style>
+</head>
+
+<body>
+    <canvas id="gameCanvas"></canvas>
+
+    <script>
+        // --- Constants & Config ---
+        const GRAVITY = 0.6;
+        const FRICTION = 0.82;
+        const PLAYER_SPEED = 0.8;
+        const PLAYER_MAX_SPEED = 7;
+        const JUMP_FORCE = 13;
+        const DOUBLE_JUMP_FORCE = 11;
+        const ATTACK_DURATION = 18;
+        const ATTACK_COOLDOWN = 25;
+        const INVULNERABILITY_TIME = 80;
+
+        const COLORS = {
+            bg: '#0a0a0a',
+            bgGradient1: '#111',
+            bgGradient2: '#000',
+            platformTop: '#1a1', // Toxic Green top
+            platformBody: '#222',
+            player: '#333',
+            playerScarf: '#f22',
+            ghoulBody: '#500',
+            ghoulGlow: '#f00',
+            batBody: '#203',
+            batWing: '#506',
+            spike: '#888',
+            heart: '#e00',
+            portalOne: '#0ff',
+            portalTwo: '#f0f',
+            slash: '#fff',
+            textShadow: 'rgba(0,0,0,0.8)'
+        };
+
+        // --- Input Handling ---
+        const keys = { ArrowLeft: false, ArrowRight: false, ArrowUp: false, Space: false, KeyF: false };
+        const keyPresses = { ArrowUp: false, Space: false, KeyF: false };
+
+        window.addEventListener('keydown', (e) => {
+            if (keys.hasOwnProperty(e.code)) {
+                keys[e.code] = true;
+                keyPresses[e.code] = true;
+            }
+            if (e.code === 'ArrowUp') keyPresses['Space'] = true;
+            if (e.code === 'Space') keyPresses['ArrowUp'] = true;
+        });
+        window.addEventListener('keyup', (e) => { if (keys.hasOwnProperty(e.code)) keys[e.code] = false; });
+
+        // --- Math & Helpers ---
+        class Vector2 { constructor(x, y) { this.x = x; this.y = y; } }
+        class Box {
+            constructor(x, y, w, h) {
+                this.pos = new Vector2(x, y);
+                this.w = w; this.h = h;
+            }
+            overlaps(other) {
+                return (this.pos.x < other.pos.x + other.w && this.pos.x + this.w > other.pos.x &&
+                    this.pos.y < other.pos.y + other.h && this.pos.y + this.h > other.pos.y);
+            }
+        }
+
+        // --- Visual Effects ---
+        class Particle {
+            constructor(x, y, color, speed, size, life) {
+                this.x = x; this.y = y;
+                this.color = color;
+                this.size = size;
+                let angle = Math.random() * Math.PI * 2;
+                this.vx = Math.cos(angle) * speed;
+                this.vy = Math.sin(angle) * speed;
+                this.life = life; this.maxLife = life;
+                this.decay = Math.random() * 0.1 + 0.9; // Friction
+            }
+            update() {
+                this.x += this.vx; this.y += this.vy;
+                this.vx *= this.decay; this.vy *= this.decay;
+                this.life--;
+            }
+            draw(ctx) {
+                ctx.globalAlpha = this.life / this.maxLife;
+                ctx.fillStyle = this.color;
+                ctx.fillRect(this.x, this.y, this.size, this.size);
+                ctx.globalAlpha = 1;
+            }
+        }
+
+        // --- Entities ---
+        class Entity extends Box {
+            constructor(x, y, w, h) {
+                super(x, y, w, h);
+                this.vel = new Vector2(0, 0);
+                this.grounded = false;
+                this.markedForDeletion = false;
+                this.stunned = 0;
+            }
+            update() {
+                if (this.stunned > 0) { this.stunned--; return; } // Stun logic
+                this.vel.y += GRAVITY;
+                this.pos.x += this.vel.x;
+                this.checkCollisions(true);
+                this.pos.y += this.vel.y;
+                this.grounded = false;
+                this.checkCollisions(false);
+            }
+            checkCollisions(horizontal) {
+                if (!game.level) return;
+                // Optimization: Only check platforms near the entity?
+                // For now, simple loop is fine for < 100 platforms per frame visible
+                for (let platform of game.level.platforms) {
+                    // Simple optimization: x check first
+                    if (this.pos.x + this.w + 50 < platform.pos.x || this.pos.x - 50 > platform.pos.x + platform.w) continue;
+
+                    if (this.overlaps(platform)) {
+                        if (horizontal) {
+                            if (this.vel.x > 0) this.pos.x = platform.pos.x - this.w;
+                            else if (this.vel.x < 0) this.pos.x = platform.pos.x + platform.w;
+                            this.vel.x = 0;
+                        } else {
+                            if (this.vel.y > 0) {
+                                this.pos.y = platform.pos.y - this.h;
+                                this.grounded = true;
+                            } else if (this.vel.y < 0) {
+                                this.pos.y = platform.pos.y + platform.h;
+                            }
+                            this.vel.y = 0;
+                        }
+                    }
+                }
+            }
+        }
+
+        class Player extends Entity {
+            constructor(x, y) {
+                super(x, y, 30, 50);
+                this.jumpCount = 0;
+                this.facingRight = true;
+                this.attackTimer = 0;
+                this.attackCooldown = 0;
+                this.invulnerable = 0;
+                this.health = 3; // Max health can increase?
+                this.maxHealth = 3;
+                this.animTimer = 0;
+            }
+            update() {
+                // Input
+                if (keys.ArrowRight) {
+                    this.vel.x += PLAYER_SPEED;
+                    this.facingRight = true;
+                    this.animTimer++;
+                } else if (keys.ArrowLeft) {
+                    this.vel.x -= PLAYER_SPEED;
+                    this.facingRight = false;
+                    this.animTimer++;
+                } else {
+                    this.vel.x *= FRICTION;
+                    this.animTimer = 0;
+                }
+                if (Math.abs(this.vel.x) > PLAYER_MAX_SPEED) this.vel.x = Math.sign(this.vel.x) * PLAYER_MAX_SPEED;
+                if (Math.abs(this.vel.x) < 0.1) this.vel.x = 0;
+
+                // Jump
+                if ((keyPresses.Space || keyPresses.ArrowUp)) {
+                    if (this.grounded) {
+                        this.vel.y = -JUMP_FORCE;
+                        this.jumpCount = 1;
+                        this.spawnDust();
+                    } else if (this.jumpCount < 2) {
+                        this.vel.y = -DOUBLE_JUMP_FORCE;
+                        this.jumpCount++;
+                        this.spawnDust();
+                    }
+                    keyPresses.Space = false; keyPresses.ArrowUp = false;
+                }
+
+                // Attack
+                if (this.attackCooldown > 0) this.attackCooldown--;
+                if (keyPresses.KeyF && this.attackCooldown <= 0) {
+                    this.attackTimer = ATTACK_DURATION;
+                    this.attackCooldown = ATTACK_COOLDOWN;
+                    this.checkAttackHit();
+                    keyPresses.KeyF = false;
+                    // Lunge forward slightly
+                    this.vel.x += (this.facingRight ? 5 : -5);
+                }
+                if (this.attackTimer > 0) this.attackTimer--;
+
+                if (this.invulnerable > 0) this.invulnerable--;
+                super.update();
+                if (this.grounded) this.jumpCount = 0;
+
+                // Hazard Collision
+                if (game.level) {
+                    for (let spike of game.level.spikes) {
+                        if (this.overlaps(spike)) {
+                            this.takeDamage(1);
+                            this.vel.y = -10;
+                            this.vel.x = -this.vel.x * 1.5;
+                        }
+                    }
+                    if (game.level.portal && this.overlaps(game.level.portal)) game.nextLevel();
+                }
+
+                if (this.pos.y > 1000) this.takeDamage(999); // Fall death
+
+                // Enemy Collision
+                for (let enemy of game.enemies) {
+                    if (this.overlaps(enemy) && this.invulnerable <= 0 && !enemy.dead) {
+                        this.takeDamage(1);
+                        this.vel.x = (this.pos.x < enemy.pos.x) ? -12 : 12;
+                        this.vel.y = -6;
+                    }
+                }
+            }
+            takeDamage(amount) {
+                if (this.invulnerable > 0 || game.state !== 'PLAYING') return;
+                this.health -= amount;
+                this.invulnerable = INVULNERABILITY_TIME;
+                game.shakeScreen(15);
+                if (this.health <= 0) game.gameOver();
+            }
+            checkAttackHit() {
+                let range = 80;
+                let hitX = this.facingRight ? this.pos.x + this.w : this.pos.x - range;
+                let hitBox = new Box(hitX, this.pos.y - 10, range, this.h + 20); // Larger hitbox
+                let hit = false;
+                for (let enemy of game.enemies) {
+                    if (hitBox.overlaps(enemy) && !enemy.dead) {
+                        enemy.die();
+                        game.score += 100 * (game.levelIndex + 1);
+                        hit = true;
+                    }
+                }
+                if (hit) game.shakeScreen(6);
+            }
+            spawnDust() {
+                for (let i = 0; i < 5; i++) game.particles.push(new Particle(this.pos.x + this.w / 2, this.pos.y + this.h, '#aaa', 2, 4, 15));
+            }
+            draw(ctx) {
+                if (this.invulnerable > 0 && Math.floor(Date.now() / 80) % 2 === 0) return;
+                ctx.save();
+                ctx.translate(this.pos.x + this.w / 2, this.pos.y + this.h / 2);
+                if (!this.facingRight) ctx.scale(-1, 1);
+
+                // Cape/Cloak Physics
+                let speedRatio = this.vel.x / PLAYER_MAX_SPEED;
+                let capeLift = -Math.abs(speedRatio) * 15;
+                if (!this.grounded) capeLift -= 10;
+
+                ctx.fillStyle = COLORS.player;
+                ctx.beginPath();
+                ctx.moveTo(-10, -20); // Neck
+                ctx.quadraticCurveTo(-25, 0 + capeLift, -20, 30 + capeLift); // Back of cape
+                ctx.lineTo(15, 25); // Front bottom
+                ctx.lineTo(10, -20); // Front neck
+                ctx.fill();
+
+                // Head
+                ctx.fillStyle = '#000';
+                ctx.beginPath();
+                ctx.arc(0, -20, 12, 0, Math.PI * 2);
+                ctx.fill();
+
+                // Scarf
+                ctx.strokeStyle = COLORS.playerScarf;
+                ctx.lineWidth = 4;
+                ctx.beginPath();
+                ctx.moveTo(0, -15);
+                ctx.quadraticCurveTo(-15, -15, -25 + (speedRatio * -10), -5 + Math.sin(Date.now() / 100) * 5);
+                ctx.stroke();
+
+                // Eyes
+                ctx.fillStyle = '#fff';
+                ctx.beginPath();
+                ctx.moveTo(2, -22); ctx.lineTo(10, -20); ctx.lineTo(4, -18); ctx.fill();
+
+                // Legs
+                if (this.grounded && Math.abs(this.vel.x) > 0.5) {
+                    let legFactor = Math.sin(this.animTimer * 0.5) * 12;
+                    ctx.strokeStyle = '#111';
+                    ctx.beginPath(); ctx.moveTo(-5, 20); ctx.lineTo(-8 - legFactor, 40); ctx.stroke(); // Back leg
+                    ctx.beginPath(); ctx.moveTo(5, 20); ctx.lineTo(8 + legFactor, 40); ctx.stroke(); // Front leg
+                } else if (!this.grounded) {
+                    ctx.strokeStyle = '#111';
+                    ctx.beginPath(); ctx.moveTo(-5, 20); ctx.lineTo(-10, 35); ctx.stroke();
+                    ctx.beginPath(); ctx.moveTo(5, 20); ctx.lineTo(10, 30); ctx.stroke();
+                }
+
+                // Sword Slash
+                if (this.attackTimer > 0) {
+                    let p = 1 - (this.attackTimer / ATTACK_DURATION); // 0 to 1
+                    ctx.strokeStyle = COLORS.slash;
+                    ctx.lineWidth = 4 - (p * 3);
+                    ctx.beginPath();
+                    ctx.arc(10, -10, 50, -Math.PI / 2 + (p * Math.PI), -Math.PI / 2 + (p * Math.PI) + Math.PI / 3);
+                    ctx.stroke();
+                }
+
+                ctx.restore();
+            }
+        }
+
+        class Enemy extends Entity {
+            constructor(x, y, w, h, color) {
+                super(x, y, w, h);
+                this.color = color;
+                this.dead = false;
+                this.hp = 1;
+            }
+            die() {
+                this.dead = true;
+                this.markedForDeletion = true;
+                for (let i = 0; i < 15; i++) {
+                    game.particles.push(new Particle(this.pos.x + this.w / 2, this.pos.y + this.h / 2, this.color, 4, 6, 30));
+                    game.particles.push(new Particle(this.pos.x + this.w / 2, this.pos.y + this.h / 2, '#fff', 6, 3, 10)); // Spark
+                }
+            }
+        }
+
+        class Ghoul extends Enemy {
+            constructor(x, y) {
+                super(x, y, 40, 40, COLORS.ghoulBody);
+                this.hp = 2 + Math.floor(game.levelIndex / 3);
+                this.speed = 1.5 + (game.levelIndex * 0.1);
+                this.dir = 1;
+                this.aggro = false;
+            }
+            update() {
+                if (this.dead) return;
+                super.update();
+
+                let dist = game.player.pos.x - this.pos.x;
+                let heightDiff = Math.abs(game.player.pos.y - this.pos.y);
+
+                // Aggro Logic
+                if (Math.abs(dist) < 350 && heightDiff < 80) this.aggro = true;
+                else this.aggro = false;
+
+                if (this.aggro) {
+                    this.vel.x = Math.sign(dist) * (this.speed * 1.8);
+                } else {
+                    this.vel.x = this.dir * this.speed;
+                }
+
+                // Ledge Detection
+                if (this.grounded) {
+                    let ahead = this.pos.x + (this.vel.x > 0 ? this.w + 10 : -10);
+                    let groundAhead = false;
+                    // Only check if not aggro or if aggro but safe? 
+                    // Ghouls are dumb, they might fall if aggroed in "Ascension" mode to be scary
+                    // But let's keep them on platforms for now so they don't disappear
+                    for (let p of game.level.platforms) {
+                        if (ahead > p.pos.x && ahead < p.pos.x + p.w && this.pos.y + this.h + 2 > p.pos.y) {
+                            groundAhead = true; break;
+                        }
+                    }
+                    if (!groundAhead) {
+                        this.dir *= -1;
+                        this.vel.x *= -1; // Bounce immediately
+                    }
+                }
+            }
+            draw(ctx) {
+                if (this.dead) return;
+                ctx.save();
+                ctx.translate(this.pos.x + this.w / 2, this.pos.y + this.h / 2);
+                if (this.vel.x < 0) ctx.scale(-1, 1);
+
+                // Aura
+                ctx.shadowBlur = 10;
+                ctx.shadowColor = COLORS.ghoulGlow;
+
+                // Body (Jagged)
+                ctx.fillStyle = this.color;
+                ctx.beginPath();
+                ctx.moveTo(-15, 20);
+                ctx.lineTo(-20, -10);
+                ctx.lineTo(0, -15);
+                ctx.lineTo(20, -5); // Hunchback
+                ctx.lineTo(15, 20);
+                ctx.fill();
+
+                ctx.shadowBlur = 0;
+
+                // Eyes (Glowing)
+                ctx.fillStyle = '#fff';
+                ctx.beginPath(); ctx.arc(8, -5, 3, 0, Math.PI * 2); ctx.fill();
+
+                // Mouth
+                if (this.aggro) {
+                    ctx.fillStyle = '#000';
+                    ctx.beginPath(); ctx.moveTo(5, 5); ctx.lineTo(15, 10); ctx.lineTo(5, 15); ctx.fill();
+                }
+
+                ctx.restore();
+            }
+        }
+
+        class Bat extends Enemy {
+            constructor(x, y) {
+                super(x, y, 35, 25, COLORS.batBody);
+                this.baseY = y;
+                this.angle = Math.random() * Math.PI;
+                this.swooping = false;
+                this.targetPos = new Vector2(0, 0);
+            }
+            update() {
+                if (this.dead) return;
+
+                let distToPlayer = Math.sqrt(Math.pow(game.player.pos.x - this.pos.x, 2) + Math.pow(game.player.pos.y - this.pos.y, 2));
+
+                if (!this.swooping) {
+                    // Idle flying
+                    this.angle += 0.05;
+                    this.pos.y = this.baseY + Math.sin(this.angle) * 30;
+                    this.pos.x += Math.sin(this.angle * 0.5) * 2;
+
+                    // Trigger Swoop
+                    if (distToPlayer < 250 && game.player.pos.y > this.pos.y && Math.random() < 0.02) {
+                        this.swooping = true;
+                        this.targetPos = new Vector2(game.player.pos.x, game.player.pos.y);
+                        this.vel = new Vector2((this.targetPos.x - this.pos.x) * 0.04, (this.targetPos.y - this.pos.y) * 0.04);
+                    }
+                } else {
+                    // Swooping
+                    this.pos.x += this.vel.x;
+                    this.pos.y += this.vel.y;
+
+                    if (this.pos.y > this.targetPos.y + 100 || this.grounded || this.pos.y > 900) {
+                        this.swooping = false; // Return to hover logic (simplified: just slowly float up)
+                        this.vel.y = -2;
+                    }
+                }
+
+                // Return to base height slowly if not swooping
+                if (!this.swooping && Math.abs(this.pos.y - this.baseY) > 50) {
+                    this.pos.y += (this.baseY - this.pos.y) * 0.02;
+                }
+            }
+            draw(ctx) {
+                ctx.save();
+                ctx.translate(this.pos.x + this.w / 2, this.pos.y + this.h / 2);
+
+                // Flap animation
+                let flap = Math.sin(Date.now() / 50) * 15;
+
+                ctx.fillStyle = COLORS.batWing;
+                ctx.beginPath();
+                ctx.moveTo(0, 5);
+                ctx.lineTo(-25, -10 + flap); // Left wing tip
+                ctx.lineTo(-10, 5);
+                ctx.lineTo(0, 5);
+                ctx.lineTo(10, 5);
+                ctx.lineTo(25, -10 + flap); // Right wing tip
+                ctx.lineTo(0, 5);
+                ctx.fill();
+
+                ctx.fillStyle = COLORS.batBody;
+                ctx.beginPath(); ctx.arc(0, 0, 8, 0, Math.PI * 2); ctx.fill();
+
+                ctx.fillStyle = '#f00'; // Eyes
+                ctx.fillRect(-3, -2, 2, 2); ctx.fillRect(3, -2, 2, 2);
+
+                ctx.restore();
+            }
+        }
+
+        // --- Procedural Generation ---
+
+        class Level {
+            constructor(platforms, spikes, enemies, portalPos) {
+                this.platforms = platforms;
+                this.spikes = spikes;
+                this.enemies = enemies; // Live array
+                this.portal = new Box(portalPos.x, portalPos.y, 50, 80);
+            }
+        }
+
+        class LevelGenerator {
+            // Chunks are functions that return objects relative to an offset X, Y
+            static generate(levelNum) {
+                let chunksCount = 4 + Math.floor(levelNum * 0.8); // Level 1=4 chunks, Level 5=8 chunks
+                if (chunksCount > 20) chunksCount = 20; // Cap length
+
+                let platforms = [];
+                let spikes = [];
+                let enemies = [];
+                let currentX = 0;
+                let currentY = 500; // Start height
+
+                // Start Chunk
+                platforms.push(new Box(currentX, currentY, 400, 50));
+                currentX += 400;
+
+                for (let i = 0; i < chunksCount; i++) {
+                    let chunkType = Math.floor(Math.random() * 5);
+                    // Force easier chunks for first level/first chunk
+                    if (levelNum === 0 && i === 0) chunkType = 0;
+
+                    let chunkWidth = 0;
+
+                    switch (chunkType) {
+                        case 0: // Flat Run
+                            chunkWidth = 400;
+                            platforms.push(new Box(currentX, currentY, chunkWidth, 50));
+                            if (Math.random() > 0.5) enemies.push(new Ghoul(currentX + 200, currentY - 50));
+                            break;
+                        case 1: // Gap Jump
+                            chunkWidth = 200;
+                            // Gap of 150
+                            currentX += 150;
+                            platforms.push(new Box(currentX, currentY, chunkWidth, 50));
+                            break;
+                        case 2: // Steps Up
+                            chunkWidth = 400;
+                            platforms.push(new Box(currentX, currentY - 50, 100, 20));
+                            platforms.push(new Box(currentX + 150, currentY - 120, 100, 20));
+                            platforms.push(new Box(currentX + 300, currentY - 190, 100, 20));
+                            currentY -= 190; // Adjust 'ground'
+                            if (levelNum > 1) enemies.push(new Bat(currentX + 200, currentY - 150));
+                            break;
+                        case 3: // Spikes Pit
+                            chunkWidth = 500;
+                            platforms.push(new Box(currentX, currentY, 100, 50)); // Edge
+                            spikes.push(new Box(currentX + 100, currentY + 40, 300, 30)); // Pit hazard
+                            platforms.push(new Box(currentX + 400, currentY, 100, 50)); // Landing
+                            if (Math.random() > 0.7) enemies.push(new Bat(currentX + 250, currentY - 200));
+                            break;
+                        case 4: // Floating Islands
+                            chunkWidth = 600;
+                            platforms.push(new Box(currentX, currentY - 60, 120, 20));
+                            platforms.push(new Box(currentX + 200, currentY - 120, 120, 20));
+                            platforms.push(new Box(currentX + 450, currentY - 60, 120, 20));
+                            enemies.push(new Ghoul(currentX + 220, currentY - 160));
+                            if (levelNum > 2) enemies.push(new Bat(currentX + 300, currentY - 300));
+                            break;
+                    }
+                    currentX += chunkWidth;
+                }
+
+                // End Chunk
+                platforms.push(new Box(currentX + 50, currentY, 300, 50));
+                let portalPos = new Vector2(currentX + 200, currentY - 80);
+
+                return new Level(platforms, spikes, enemies, portalPos);
+            }
+        }
+
+        // --- Game Manager ---
+        class Game {
+            constructor(canvas) {
+                this.canvas = canvas;
+                this.ctx = canvas.getContext('2d');
+                this.state = 'START';
+                this.score = 0;
+                this.levelIndex = 0;
+                this.camera = new Vector2(0, 0);
+                this.shake = 0;
+                this.resize();
+                window.addEventListener('resize', () => this.resize());
+            }
+
+            resize() {
+                this.canvas.width = window.innerWidth;
+                this.canvas.height = window.innerHeight;
+            }
+
+            shakeScreen(amt) { this.shake = amt; }
+
+            startLevel(idx) {
+                this.levelIndex = idx;
+                this.level = LevelGenerator.generate(idx);
+                this.enemies = this.level.enemies;
+                this.player = new Player(100, 300);
+
+                // Keep stats if continuing
+                if (this.state === 'PLAYING' && this.playerRef) {
+                    this.player.health = this.playerRef.health;
+                    this.player.score = this.score;
+                }
+                this.playerRef = this.player;
+                this.particles = [];
+                this.state = 'PLAYING';
+            }
+
+            nextLevel() {
+                if (this.player.health < this.player.maxHealth) this.player.health++;
+                this.score += 500;
+                this.startLevel(this.levelIndex + 1);
+            }
+
+            gameOver() { this.state = 'GAMEOVER'; }
+
+            update() {
+                if (this.state !== 'PLAYING') return;
+
+                this.player.update();
+                this.enemies.forEach(e => e.update());
+                this.enemies = this.enemies.filter(e => !e.markedForDeletion);
+                this.particles.forEach(p => p.update());
+                this.particles = this.particles.filter(p => !p.markedForDeletion && p.life > 0);
+
+                let targetX = this.player.pos.x - this.canvas.width * 0.3;
+                let targetY = this.player.pos.y - this.canvas.height * 0.6;
+                this.camera.x += (targetX - this.camera.x) * 0.1;
+                this.camera.y += (targetY - this.camera.y) * 0.1;
+
+                if (this.shake > 0) {
+                    this.camera.x += (Math.random() - 0.5) * this.shake;
+                    this.camera.y += (Math.random() - 0.5) * this.shake;
+                    this.shake *= 0.9;
+                    if (this.shake < 1) this.shake = 0;
+                }
+            }
+
+            draw() {
+                let gradient = this.ctx.createLinearGradient(0, 0, 0, this.canvas.height);
+                gradient.addColorStop(0, COLORS.bgGradient1);
+                gradient.addColorStop(1, COLORS.bgGradient2);
+                this.ctx.fillStyle = gradient;
+                this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+
+                if (this.state === 'START') {
+                    this.drawMenu("SHADOW OF THE DUNGEON", "ASCENSION", "Press ENTER to Begin");
+                    return;
+                }
+                if (this.state === 'GAMEOVER') {
+                    this.drawMenu("GAME OVER", "Score: " + this.score, "Press ENTER to Restart");
+                    return;
+                }
+
+                this.ctx.save();
+                this.ctx.translate(-Math.floor(this.camera.x), -Math.floor(this.camera.y));
+
+                for (let p of this.level.platforms) {
+                    this.ctx.fillStyle = COLORS.platformBody;
+                    this.ctx.fillRect(p.pos.x, p.pos.y, p.w, p.h);
+                    this.ctx.fillStyle = COLORS.platformTop;
+                    this.ctx.fillRect(p.pos.x, p.pos.y, p.w, 4);
+                    if (p.w > 100) {
+                        this.ctx.fillStyle = '#333';
+                        this.ctx.fillRect(p.pos.x + 50, p.pos.y + 10, 20, 2);
+                        this.ctx.fillRect(p.pos.x + 55, p.pos.y + 12, 2, 5);
+                    }
+                }
+
+                for (let s of this.level.spikes) {
+                    this.ctx.fillStyle = COLORS.spike;
+                    let cnt = Math.floor(s.w / 20);
+                    for (let i = 0; i < cnt; i++) {
+                        this.ctx.beginPath();
+                        this.ctx.moveTo(s.pos.x + i * 20, s.pos.y + s.h);
+                        this.ctx.lineTo(s.pos.x + i * 20 + 10, s.pos.y - 10);
+                        this.ctx.lineTo(s.pos.x + i * 20 + 20, s.pos.y + s.h);
+                        this.ctx.fill();
+                    }
+                }
+
+                let p = this.level.portal;
+                let grad = this.ctx.createLinearGradient(p.pos.x, p.pos.y, p.pos.x, p.pos.y + p.h);
+                grad.addColorStop(0, COLORS.portalOne); grad.addColorStop(1, COLORS.portalTwo);
+                this.ctx.fillStyle = grad;
+                this.ctx.globalAlpha = 0.7 + Math.sin(Date.now() / 200) * 0.3;
+                this.ctx.fillRect(p.pos.x, p.pos.y, p.w, p.h);
+                this.ctx.globalAlpha = 1;
+                this.ctx.strokeStyle = '#fff';
+                this.ctx.beginPath();
+                this.ctx.arc(p.pos.x + p.w / 2, p.pos.y + p.h / 2, 20 * Math.abs(Math.sin(Date.now() / 500)), 0, Math.PI * 2);
+                this.ctx.stroke();
+
+                this.player.draw(this.ctx);
+                this.enemies.forEach(e => e.draw(this.ctx));
+                this.particles.forEach(pt => pt.draw(this.ctx));
+
+                this.ctx.restore();
+                this.drawHUD();
+            }
+
+            drawMenu(title, sub, cta) {
+                this.ctx.textAlign = 'center';
+                this.ctx.fillStyle = '#fff';
+                this.ctx.font = 'bold 50px Segoe UI';
+                this.ctx.shadowColor = COLORS.ghoulGlow;
+                this.ctx.shadowBlur = 20;
+                this.ctx.fillText(title, this.canvas.width / 2, this.canvas.height / 2 - 60);
+                this.ctx.shadowBlur = 0;
+                this.ctx.font = '30px Segoe UI';
+                this.ctx.fillText(sub, this.canvas.width / 2, this.canvas.height / 2);
+                this.ctx.fillStyle = '#aaa';
+                this.ctx.font = '20px Segoe UI';
+                this.ctx.fillText(cta, this.canvas.width / 2, this.canvas.height / 2 + 60);
+            }
+
+            drawHUD() {
+                this.ctx.fillStyle = 'rgba(0,0,0,0.5)';
+                this.ctx.fillRect(20, 20, 250, 70);
+                this.ctx.strokeStyle = '#444';
+                this.ctx.lineWidth = 2;
+                this.ctx.strokeRect(20, 20, 250, 70);
+
+                for (let i = 0; i < this.player.maxHealth; i++) {
+                    let full = i < this.player.health;
+                    this.ctx.fillStyle = full ? COLORS.heart : '#400';
+                    this.ctx.beginPath();
+                    this.ctx.arc(50 + i * 35, 55, 12, 0, Math.PI * 2);
+                    this.ctx.fill();
+                    if (full) {
+                        this.ctx.shadowColor = '#f00';
+                        this.ctx.shadowBlur = 10;
+                        this.ctx.fill();
+                        this.ctx.shadowBlur = 0;
+                    }
+                }
+
+                this.ctx.fillStyle = '#fff';
+                this.ctx.font = 'bold 18px Segoe UI';
+                this.ctx.textAlign = 'right';
+                this.ctx.fillText("LVL " + (this.levelIndex + 1), 250, 50);
+                this.ctx.fillStyle = '#ccc';
+                this.ctx.font = '14px Segoe UI';
+                this.ctx.fillText("SCR " + this.score, 250, 75);
+            }
+        }
+
+        const game = new Game(document.getElementById('gameCanvas'));
+        game.startLevel(0); // Initialize here instead
+
+        function loop() {
+            game.update();
+            game.draw();
+            requestAnimationFrame(loop);
+        }
+        window.addEventListener('keydown', (e) => {
+            if (e.code === 'Enter' && (game.state !== 'PLAYING')) {
+                game.score = 0;
+                game.startLevel(0);
+            }
+        });
+        loop();
+    </script>
+</body>
+
+</html>
