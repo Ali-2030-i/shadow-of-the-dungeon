@@ -18,22 +18,7 @@
             touch-action: none;
         }
 
-        #mobileControls {
-            position: absolute;
-            bottom: 20px;
-            left: 0;
-            width: 100%;
-            height: 120px;
-            pointer-events: none;
-            display: none;
-            z-index: 1000;
-        }
 
-        @media (max-width: 1024px) {
-            #mobileControls {
-                display: block;
-            }
-        }
 
         .control-group {
             position: absolute;
@@ -82,17 +67,7 @@
 <body>
     <canvas id="gameCanvas"></canvas>
 
-    <div id="mobileControls">
-        <div class="control-group left-controls">
-            <div class="btn rect-btn" id="btnLeft">←</div>
-            <div class="btn rect-btn" id="btnRight">→</div>
-        </div>
-        <div class="control-group right-controls">
-            <div class="btn" id="btnAttack"
-                style="background: rgba(255, 50, 50, 0.2); border-color: rgba(255, 50, 50, 0.5);">⚔️</div>
-            <div class="btn" id="btnJump">↑</div>
-        </div>
-    </div>
+
 
     <script>
         // --- Constants & Config ---
@@ -106,150 +81,149 @@
         const ATTACK_COOLDOWN = 25;
         const INVULNERABILITY_TIME = 80;
 
+        const SCROLL_SPEED = 0.5; // Parallax
+        const CAMERA_ZOOM = 0.65; // Zoom out factor (0.65 means we see ~50% more)
+
         const COLORS = {
-            const SCROLL_SPEED = 0.5; // Parallax
-            const CAMERA_ZOOM = 0.65; // Zoom out factor (0.65 means we see ~50% more)
+            bg: '#050505',
+            bgGradient1: '#1a1a1a',
+            bgGradient2: '#000000',
+            platformTop: '#1a1', // Toxic Green top
+            platformBody: '#222',
+            player: '#333',
+            playerScarf: '#f22',
+            ghoulBody: '#500',
+            ghoulGlow: '#f00',
+            batBody: '#203',
+            batWing: '#506',
+            spike: '#888',
+            heart: '#e00',
+            portalOne: '#0ff',
+            portalTwo: '#f0f',
+            slash: '#fff',
+            textShadow: 'rgba(0,0,0,0.8)'
+        };
 
-            const COLORS = {
-                bg: '#050505',
-                bgGradient1: '#1a1a1a',
-                bgGradient2: '#000000',
-                platformTop: '#1a1', // Toxic Green top
-                platformBody: '#222',
-                player: '#333',
-                playerScarf: '#f22',
-                ghoulBody: '#500',
-                ghoulGlow: '#f00',
-                batBody: '#203',
-                batWing: '#506',
-                spike: '#888',
-                heart: '#e00',
-                portalOne: '#0ff',
-                portalTwo: '#f0f',
-                slash: '#fff',
-                textShadow: 'rgba(0,0,0,0.8)'
-            };
+        // --- Input Handling ---
+        const keys = { ArrowLeft: false, ArrowRight: false, ArrowUp: false, Space: false, KeyF: false };
+        const keyPresses = { ArrowUp: false, Space: false, KeyF: false };
 
-            // --- Input Handling ---
-            const keys = { ArrowLeft: false, ArrowRight: false, ArrowUp: false, Space: false, KeyF: false };
-            const keyPresses = { ArrowUp: false, Space: false, KeyF: false };
+        window.addEventListener('keydown', (e) => {
+            if (keys.hasOwnProperty(e.code)) {
+                keys[e.code] = true;
+                keyPresses[e.code] = true;
+            }
+            if (e.code === 'ArrowUp') keyPresses['Space'] = true;
+            if (e.code === 'Space') keyPresses['ArrowUp'] = true;
+        });
+        window.addEventListener('keyup', (e) => { if (keys.hasOwnProperty(e.code)) keys[e.code] = false; });
 
-            window.addEventListener('keydown', (e) => {
-                if (keys.hasOwnProperty(e.code)) {
-                    keys[e.code] = true;
-                    keyPresses[e.code] = true;
-                }
-                if (e.code === 'ArrowUp') keyPresses['Space'] = true;
-                if (e.code === 'Space') keyPresses['ArrowUp'] = true;
-            });
-            window.addEventListener('keyup', (e) => { if (keys.hasOwnProperty(e.code)) keys[e.code] = false; });
+        window.addEventListener('keyup', (e) => { if (keys.hasOwnProperty(e.code)) keys[e.code] = false; });
 
-            window.addEventListener('keyup', (e) => { if (keys.hasOwnProperty(e.code)) keys[e.code] = false; });
+        // --- Touch Gestures ---
+        const activeTouches = {};
+        const SWIPE_THRESHOLD = 30;
+        const TAP_THRESHOLD = 10;
+        const TAP_TIME = 200;
 
-            // --- Touch Gestures ---
-            const activeTouches = {};
-            const SWIPE_THRESHOLD = 30;
-            const TAP_THRESHOLD = 10;
-            const TAP_TIME = 200;
+        window.addEventListener('touchstart', (e) => {
+            e.preventDefault(); // Prevent default browser actions
+            // In Game Over or Start Screen: Tap anywhere to start
+            if (game.state !== 'PLAYING') {
+                game.triggerRestart = true;
+                return;
+            }
 
-            window.addEventListener('touchstart', (e) => {
-                e.preventDefault(); // Prevent default browser actions
-                // In Game Over or Start Screen: Tap anywhere to start
-                if (game.state !== 'PLAYING') {
-                    game.triggerRestart = true;
-                    return;
-                }
+            for (let i = 0; i < e.changedTouches.length; i++) {
+                let t = e.changedTouches[i];
+                activeTouches[t.identifier] = {
+                    startX: t.clientX,
+                    startY: t.clientY,
+                    currX: t.clientX,
+                    currY: t.clientY,
+                    startTime: Date.now(),
+                    consumed: false
+                };
+            }
+        }, { passive: false });
 
-                for (let i = 0; i < e.changedTouches.length; i++) {
-                    let t = e.changedTouches[i];
-                    activeTouches[t.identifier] = {
-                        startX: t.clientX,
-                        startY: t.clientY,
-                        currX: t.clientX,
-                        currY: t.clientY,
-                        startTime: Date.now(),
-                        consumed: false
-                    };
-                }
-            }, { passive: false });
+        window.addEventListener('touchmove', (e) => {
+            e.preventDefault();
+            for (let i = 0; i < e.changedTouches.length; i++) {
+                let t = e.changedTouches[i];
+                let tracked = activeTouches[t.identifier];
+                if (tracked && !tracked.consumed) {
+                    tracked.currX = t.clientX;
+                    tracked.currY = t.clientY;
 
-            window.addEventListener('touchmove', (e) => {
-                e.preventDefault();
-                for (let i = 0; i < e.changedTouches.length; i++) {
-                    let t = e.changedTouches[i];
-                    let tracked = activeTouches[t.identifier];
-                    if (tracked && !tracked.consumed) {
-                        tracked.currX = t.clientX;
-                        tracked.currY = t.clientY;
+                    // Detect Swipe (Attack)
+                    let dx = tracked.currX - tracked.startX;
+                    let dy = tracked.currY - tracked.startY;
+                    let dist = Math.sqrt(dx * dx + dy * dy);
 
-                        // Detect Swipe (Attack)
-                        let dx = tracked.currX - tracked.startX;
-                        let dy = tracked.currY - tracked.startY;
-                        let dist = Math.sqrt(dx * dx + dy * dy);
-
-                        if (dist > SWIPE_THRESHOLD) {
-                            // It's a swipe!
-                            keys.KeyF = true;
-                            keyPresses.KeyF = true;
-                            tracked.consumed = true; // Don't verify for tap or movement anymore
-                            // Can also determine direction of attack if needed
-                            // Reset move keys just in case
-                            keys.ArrowLeft = false;
-                            keys.ArrowRight = false;
-                        }
+                    if (dist > SWIPE_THRESHOLD) {
+                        // It's a swipe!
+                        keys.KeyF = true;
+                        keyPresses.KeyF = true;
+                        tracked.consumed = true; // Don't verify for tap or movement anymore
+                        // Can also determine direction of attack if needed
+                        // Reset move keys just in case
+                        keys.ArrowLeft = false;
+                        keys.ArrowRight = false;
                     }
                 }
-            }, { passive: false });
+            }
+        }, { passive: false });
 
-            window.addEventListener('touchend', (e) => {
-                e.preventDefault();
-                for (let i = 0; i < e.changedTouches.length; i++) {
-                    let t = e.changedTouches[i];
-                    let tracked = activeTouches[t.identifier];
+        window.addEventListener('touchend', (e) => {
+            e.preventDefault();
+            for (let i = 0; i < e.changedTouches.length; i++) {
+                let t = e.changedTouches[i];
+                let tracked = activeTouches[t.identifier];
 
-                    if (tracked && !tracked.consumed) {
-                        let dt = Date.now() - tracked.startTime;
-                        let dx = tracked.currX - tracked.startX;
-                        let dy = tracked.currY - tracked.startY;
-                        let dist = Math.sqrt(dx * dx + dy * dy);
+                if (tracked && !tracked.consumed) {
+                    let dt = Date.now() - tracked.startTime;
+                    let dx = tracked.currX - tracked.startX;
+                    let dy = tracked.currY - tracked.startY;
+                    let dist = Math.sqrt(dx * dx + dy * dy);
 
-                        // Detect Tap (Jump)
-                        if (dt < TAP_TIME && dist < TAP_THRESHOLD) {
-                            keys.ArrowUp = true;
-                            keyPresses.ArrowUp = true;
-                            keyPresses.Space = true; // Consistent jump
+                    // Detect Tap (Jump)
+                    if (dt < TAP_TIME && dist < TAP_THRESHOLD) {
+                        keys.ArrowUp = true;
+                        keyPresses.ArrowUp = true;
+                        keyPresses.Space = true; // Consistent jump
 
-                            // Reset jump key next frame effectively, but for continuous holding we assume tap is one-off
-                            setTimeout(() => { keys.ArrowUp = false; }, 100);
-                        }
+                        // Reset jump key next frame effectively, but for continuous holding we assume tap is one-off
+                        setTimeout(() => { keys.ArrowUp = false; }, 100);
                     }
-                    delete activeTouches[t.identifier];
                 }
-                // Cleanup: if no touches left, stop moving
-                if (e.touches.length === 0) {
-                    keys.ArrowLeft = false;
-                    keys.ArrowRight = false;
-                }
-            });
+                delete activeTouches[t.identifier];
+            }
+            // Cleanup: if no touches left, stop moving
+            if (e.touches.length === 0) {
+                keys.ArrowLeft = false;
+                keys.ArrowRight = false;
+            }
+        });
 
-            // Loop for holding movement update
-            function updateTouchInputs() {
-                // Reset movement first
-                let movingLeft = false;
-        let movingRight = false;
+        // Loop for holding movement update
+        function updateTouchInputs() {
+            // Reset movement first
+            let movingLeft = false;
+            let movingRight = false;
 
-        for (let id in activeTouches) {
-            let t = activeTouches[id];
-            if (t.consumed) continue;
+            for (let id in activeTouches) {
+                let t = activeTouches[id];
+                if (t.consumed) continue;
 
-            // Simple Screen Halves Logic
-            // Left 50% = Left, Right 50% = Right
-            if (t.currX < window.innerWidth / 2) movingLeft = true;
-            else movingRight = true;
-        }
+                // Simple Screen Halves Logic
+                // Left 50% = Left, Right 50% = Right
+                if (t.currX < window.innerWidth / 2) movingLeft = true;
+                else movingRight = true;
+            }
 
-        keys.ArrowLeft = movingLeft;
-        keys.ArrowRight = movingRight;
+            keys.ArrowLeft = movingLeft;
+            keys.ArrowRight = movingRight;
         }
 
         // Prevent default touch actions (scrolling/zooming) on the game interface
@@ -755,233 +729,234 @@
         }
 
         // --- Game Manager ---
-        constructor(canvas) {
-            this.canvas = canvas;
-            this.ctx = canvas.getContext('2d');
-            this.state = 'START';
-            this.score = 0;
-            this.levelIndex = 0;
-            this.camera = new Vector2(0, 0);
-            this.shake = 0;
-            this.triggerRestart = false;
-            this.resize();
-            window.addEventListener('resize', () => this.resize());
-        }
-
-        resize() {
-            this.canvas.width = window.innerWidth;
-            this.canvas.height = window.innerHeight;
-        }
-
-        shakeScreen(amt) { this.shake = amt; }
-
-        startLevel(idx) {
-            this.levelIndex = idx;
-            this.level = LevelGenerator.generate(idx);
-            this.enemies = this.level.enemies;
-            this.player = new Player(100, 300);
-
-            // Keep stats if continuing
-            if (this.state === 'PLAYING' && this.playerRef) {
-                this.player.health = this.playerRef.health;
-                this.player.score = this.score;
-            }
-            this.playerRef = this.player;
-            this.particles = [];
-            this.state = 'PLAYING';
-        }
-
-        nextLevel() {
-            if (this.player.health < this.player.maxHealth) this.player.health++;
-            this.score += 500;
-            this.startLevel(this.levelIndex + 1);
-        }
-
-        gameOver() {
-            this.state = 'GAMEOVER';
-            this.triggerRestart = false; // Wait for new tap
-        }
-
-        update() {
-            if (this.triggerRestart && this.state !== 'PLAYING') {
+        class Game {
+            constructor(canvas) {
+                this.canvas = canvas;
+                this.ctx = canvas.getContext('2d');
+                this.state = 'START';
                 this.score = 0;
-                this.startLevel(0);
+                this.levelIndex = 0;
+                this.camera = new Vector2(0, 0);
+                this.shake = 0;
                 this.triggerRestart = false;
-                return;
+                this.resize();
+                window.addEventListener('resize', () => this.resize());
             }
 
-            if (this.state !== 'PLAYING') return;
-
-            updateTouchInputs(); // Poll touch state for movement
-            this.player.update();
-            this.enemies.forEach(e => e.update());
-            this.enemies = this.enemies.filter(e => !e.markedForDeletion);
-            this.particles.forEach(p => p.update());
-            this.particles = this.particles.filter(p => !p.markedForDeletion && p.life > 0);
-
-            // Camera Logic (Adjusted for Zoom)
-            // We want to center the player in the ZOOMED coordinate space
-            // Virtual Screen Width = this.canvas.width / CAMERA_ZOOM
-            let virtualW = this.canvas.width / CAMERA_ZOOM;
-            let virtualH = this.canvas.height / CAMERA_ZOOM;
-
-            let targetX = this.player.pos.x - virtualW * 0.4; // Look slightly ahead? 0.4 centers a bit left
-            let targetY = this.player.pos.y - virtualH * 0.6;
-            this.camera.x += (targetX - this.camera.x) * 0.1;
-            this.camera.y += (targetY - this.camera.y) * 0.1;
-
-            if (this.shake > 0) {
-                this.camera.x += (Math.random() - 0.5) * this.shake;
-                this.camera.y += (Math.random() - 0.5) * this.shake;
-                this.shake *= 0.9;
-                if (this.shake < 1) this.shake = 0;
-            }
-        }
-
-        draw() {
-            // Background
-            let gradient = this.ctx.createLinearGradient(0, 0, 0, this.canvas.height);
-            gradient.addColorStop(0, COLORS.bgGradient1);
-            gradient.addColorStop(1, COLORS.bgGradient2);
-            this.ctx.fillStyle = gradient;
-            this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
-
-            if (this.state === 'START') {
-                this.drawMenu("SHADOW OF THE DUNGEON", "ASCENSION", "TAP TO START");
-                this.drawVignette();
-                return;
-            }
-            if (this.state === 'GAMEOVER') {
-                this.drawMenu("GAME OVER", "Score: " + this.score, "TAP TO RESTART");
-                this.drawVignette();
-                return;
+            resize() {
+                this.canvas.width = window.innerWidth;
+                this.canvas.height = window.innerHeight;
             }
 
-            this.ctx.save();
+            shakeScreen(amt) { this.shake = amt; }
 
-            // --- APPLY ZOOM ---
-            this.ctx.scale(CAMERA_ZOOM, CAMERA_ZOOM);
-            this.ctx.translate(-Math.floor(this.camera.x), -Math.floor(this.camera.y));
+            startLevel(idx) {
+                this.levelIndex = idx;
+                this.level = LevelGenerator.generate(idx);
+                this.enemies = this.level.enemies;
+                this.player = new Player(100, 300);
 
-            // Draw Level
-            for (let p of this.level.platforms) {
-                this.ctx.fillStyle = COLORS.platformBody;
-                this.ctx.fillRect(p.pos.x, p.pos.y, p.w, p.h);
+                // Keep stats if continuing
+                if (this.state === 'PLAYING' && this.playerRef) {
+                    this.player.health = this.playerRef.health;
+                    this.player.score = this.score;
+                }
+                this.playerRef = this.player;
+                this.particles = [];
+                this.state = 'PLAYING';
+            }
 
-                // Nice top glow
-                let grad = this.ctx.createLinearGradient(p.pos.x, p.pos.y, p.pos.x, p.pos.y + 10);
-                grad.addColorStop(0, COLORS.platformTop);
-                grad.addColorStop(1, 'rgba(0,0,0,0)');
+            nextLevel() {
+                if (this.player.health < this.player.maxHealth) this.player.health++;
+                this.score += 500;
+                this.startLevel(this.levelIndex + 1);
+            }
+
+            gameOver() {
+                this.state = 'GAMEOVER';
+                this.triggerRestart = false; // Wait for new tap
+            }
+
+            update() {
+                if (this.triggerRestart && this.state !== 'PLAYING') {
+                    this.score = 0;
+                    this.startLevel(0);
+                    this.triggerRestart = false;
+                    return;
+                }
+
+                if (this.state !== 'PLAYING') return;
+
+                updateTouchInputs(); // Poll touch state for movement
+                this.player.update();
+                this.enemies.forEach(e => e.update());
+                this.enemies = this.enemies.filter(e => !e.markedForDeletion);
+                this.particles.forEach(p => p.update());
+                this.particles = this.particles.filter(p => !p.markedForDeletion && p.life > 0);
+
+                // Camera Logic (Adjusted for Zoom)
+                // We want to center the player in the ZOOMED coordinate space
+                // Virtual Screen Width = this.canvas.width / CAMERA_ZOOM
+                let virtualW = this.canvas.width / CAMERA_ZOOM;
+                let virtualH = this.canvas.height / CAMERA_ZOOM;
+
+                let targetX = this.player.pos.x - virtualW * 0.4; // Look slightly ahead? 0.4 centers a bit left
+                let targetY = this.player.pos.y - virtualH * 0.6;
+                this.camera.x += (targetX - this.camera.x) * 0.1;
+                this.camera.y += (targetY - this.camera.y) * 0.1;
+
+                if (this.shake > 0) {
+                    this.camera.x += (Math.random() - 0.5) * this.shake;
+                    this.camera.y += (Math.random() - 0.5) * this.shake;
+                    this.shake *= 0.9;
+                    if (this.shake < 1) this.shake = 0;
+                }
+            }
+
+            draw() {
+                // Background
+                let gradient = this.ctx.createLinearGradient(0, 0, 0, this.canvas.height);
+                gradient.addColorStop(0, COLORS.bgGradient1);
+                gradient.addColorStop(1, COLORS.bgGradient2);
+                this.ctx.fillStyle = gradient;
+                this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+
+                if (this.state === 'START') {
+                    this.drawMenu("SHADOW OF THE DUNGEON", "ASCENSION", "TAP TO START");
+                    this.drawVignette();
+                    return;
+                }
+                if (this.state === 'GAMEOVER') {
+                    this.drawMenu("GAME OVER", "Score: " + this.score, "TAP TO RESTART");
+                    this.drawVignette();
+                    return;
+                }
+
+                this.ctx.save();
+
+                // --- APPLY ZOOM ---
+                this.ctx.scale(CAMERA_ZOOM, CAMERA_ZOOM);
+                this.ctx.translate(-Math.floor(this.camera.x), -Math.floor(this.camera.y));
+
+                // Draw Level
+                for (let p of this.level.platforms) {
+                    this.ctx.fillStyle = COLORS.platformBody;
+                    this.ctx.fillRect(p.pos.x, p.pos.y, p.w, p.h);
+
+                    // Nice top glow
+                    let grad = this.ctx.createLinearGradient(p.pos.x, p.pos.y, p.pos.x, p.pos.y + 10);
+                    grad.addColorStop(0, COLORS.platformTop);
+                    grad.addColorStop(1, 'rgba(0,0,0,0)');
+                    this.ctx.fillStyle = grad;
+                    this.ctx.fillRect(p.pos.x, p.pos.y, p.w, 10);
+
+                    this.ctx.fillStyle = COLORS.platformTop;
+                    this.ctx.fillRect(p.pos.x, p.pos.y, p.w, 2); // Thin sharp line
+
+                    if (p.w > 100) {
+                        this.ctx.fillStyle = '#333';
+                        this.ctx.fillRect(p.pos.x + 50, p.pos.y + 10, 20, 2);
+                        this.ctx.fillRect(p.pos.x + 55, p.pos.y + 12, 2, 5);
+                    }
+                }
+
+                for (let s of this.level.spikes) {
+                    this.ctx.fillStyle = COLORS.spike;
+                    let cnt = Math.floor(s.w / 20);
+                    for (let i = 0; i < cnt; i++) {
+                        this.ctx.beginPath();
+                        this.ctx.moveTo(s.pos.x + i * 20, s.pos.y + s.h);
+                        this.ctx.lineTo(s.pos.x + i * 20 + 10, s.pos.y - 10);
+                        this.ctx.lineTo(s.pos.x + i * 20 + 20, s.pos.y + s.h);
+                        this.ctx.fill();
+                    }
+                }
+
+                let p = this.level.portal;
+                let grad = this.ctx.createLinearGradient(p.pos.x, p.pos.y, p.pos.x, p.pos.y + p.h);
+                grad.addColorStop(0, COLORS.portalOne); grad.addColorStop(1, COLORS.portalTwo);
                 this.ctx.fillStyle = grad;
-                this.ctx.fillRect(p.pos.x, p.pos.y, p.w, 10);
-
-                this.ctx.fillStyle = COLORS.platformTop;
-                this.ctx.fillRect(p.pos.x, p.pos.y, p.w, 2); // Thin sharp line
-
-                if (p.w > 100) {
-                    this.ctx.fillStyle = '#333';
-                    this.ctx.fillRect(p.pos.x + 50, p.pos.y + 10, 20, 2);
-                    this.ctx.fillRect(p.pos.x + 55, p.pos.y + 12, 2, 5);
-                }
-            }
-
-            for (let s of this.level.spikes) {
-                this.ctx.fillStyle = COLORS.spike;
-                let cnt = Math.floor(s.w / 20);
-                for (let i = 0; i < cnt; i++) {
-                    this.ctx.beginPath();
-                    this.ctx.moveTo(s.pos.x + i * 20, s.pos.y + s.h);
-                    this.ctx.lineTo(s.pos.x + i * 20 + 10, s.pos.y - 10);
-                    this.ctx.lineTo(s.pos.x + i * 20 + 20, s.pos.y + s.h);
-                    this.ctx.fill();
-                }
-            }
-
-            let p = this.level.portal;
-            let grad = this.ctx.createLinearGradient(p.pos.x, p.pos.y, p.pos.x, p.pos.y + p.h);
-            grad.addColorStop(0, COLORS.portalOne); grad.addColorStop(1, COLORS.portalTwo);
-            this.ctx.fillStyle = grad;
-            this.ctx.globalAlpha = 0.7 + Math.sin(Date.now() / 200) * 0.3;
-            this.ctx.fillRect(p.pos.x, p.pos.y, p.w, p.h);
-            this.ctx.globalAlpha = 1;
-            this.ctx.strokeStyle = '#fff';
-            this.ctx.beginPath();
-            this.ctx.arc(p.pos.x + p.w / 2, p.pos.y + p.h / 2, 20 * Math.abs(Math.sin(Date.now() / 500)), 0, Math.PI * 2);
-            this.ctx.stroke();
-
-            this.player.draw(this.ctx);
-            this.enemies.forEach(e => e.draw(this.ctx));
-            this.particles.forEach(pt => pt.draw(this.ctx));
-
-            this.ctx.restore();
-
-            this.drawVignette();
-            this.drawHUD();
-        }
-
-        drawVignette() {
-            // Vignette Overlay for atmosphere
-            let rad = Math.max(this.canvas.width, this.canvas.height) * 0.8;
-            let grad = this.ctx.createRadialGradient(
-                this.canvas.width / 2, this.canvas.height / 2, rad * 0.4,
-                this.canvas.width / 2, this.canvas.height / 2, rad
-            );
-            grad.addColorStop(0, 'rgba(0,0,0,0)');
-            grad.addColorStop(1, 'rgba(0,0,0,0.7)');
-            this.ctx.fillStyle = grad;
-            this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
-        }
-
-        drawMenu(title, sub, cta) {
-            this.ctx.textAlign = 'center';
-            this.ctx.fillStyle = '#fff';
-            this.ctx.font = 'bold 50px Segoe UI';
-            this.ctx.shadowColor = COLORS.ghoulGlow;
-            this.ctx.shadowBlur = 20;
-            this.ctx.fillText(title, this.canvas.width / 2, this.canvas.height / 2 - 60);
-            this.ctx.shadowBlur = 0;
-            this.ctx.font = '30px Segoe UI';
-            this.ctx.fillText(sub, this.canvas.width / 2, this.canvas.height / 2);
-            this.ctx.fillStyle = '#fdb';
-            this.ctx.font = 'bold 24px Segoe UI';
-            // Pulse effect for CTA
-            let scale = 1 + Math.sin(Date.now() / 300) * 0.1;
-            this.ctx.save();
-            this.ctx.translate(this.canvas.width / 2, this.canvas.height / 2 + 80);
-            this.ctx.scale(scale, scale);
-            this.ctx.fillText(cta, 0, 0);
-            this.ctx.restore();
-        }
-
-        drawHUD() {
-            this.ctx.fillStyle = 'rgba(0,0,0,0.5)';
-            this.ctx.fillRect(20, 20, 250, 70);
-            this.ctx.strokeStyle = '#444';
-            this.ctx.lineWidth = 2;
-            this.ctx.strokeRect(20, 20, 250, 70);
-
-            for (let i = 0; i < this.player.maxHealth; i++) {
-                let full = i < this.player.health;
-                this.ctx.fillStyle = full ? COLORS.heart : '#400';
+                this.ctx.globalAlpha = 0.7 + Math.sin(Date.now() / 200) * 0.3;
+                this.ctx.fillRect(p.pos.x, p.pos.y, p.w, p.h);
+                this.ctx.globalAlpha = 1;
+                this.ctx.strokeStyle = '#fff';
                 this.ctx.beginPath();
-                this.ctx.arc(50 + i * 35, 55, 12, 0, Math.PI * 2);
-                this.ctx.fill();
-                if (full) {
-                    this.ctx.shadowColor = '#f00';
-                    this.ctx.shadowBlur = 10;
-                    this.ctx.fill();
-                    this.ctx.shadowBlur = 0;
-                }
+                this.ctx.arc(p.pos.x + p.w / 2, p.pos.y + p.h / 2, 20 * Math.abs(Math.sin(Date.now() / 500)), 0, Math.PI * 2);
+                this.ctx.stroke();
+
+                this.player.draw(this.ctx);
+                this.enemies.forEach(e => e.draw(this.ctx));
+                this.particles.forEach(pt => pt.draw(this.ctx));
+
+                this.ctx.restore();
+
+                this.drawVignette();
+                this.drawHUD();
             }
 
-            this.ctx.fillStyle = '#fff';
-            this.ctx.font = 'bold 18px Segoe UI';
-            this.ctx.textAlign = 'right';
-            this.ctx.fillText("LVL " + (this.levelIndex + 1), 250, 50);
-            this.ctx.fillStyle = '#ccc';
-            this.ctx.font = '14px Segoe UI';
-            this.ctx.fillText("SCR " + this.score, 250, 75);
-        }
+            drawVignette() {
+                // Vignette Overlay for atmosphere
+                let rad = Math.max(this.canvas.width, this.canvas.height) * 0.8;
+                let grad = this.ctx.createRadialGradient(
+                    this.canvas.width / 2, this.canvas.height / 2, rad * 0.4,
+                    this.canvas.width / 2, this.canvas.height / 2, rad
+                );
+                grad.addColorStop(0, 'rgba(0,0,0,0)');
+                grad.addColorStop(1, 'rgba(0,0,0,0.7)');
+                this.ctx.fillStyle = grad;
+                this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+            }
+
+            drawMenu(title, sub, cta) {
+                this.ctx.textAlign = 'center';
+                this.ctx.fillStyle = '#fff';
+                this.ctx.font = 'bold 50px Segoe UI';
+                this.ctx.shadowColor = COLORS.ghoulGlow;
+                this.ctx.shadowBlur = 20;
+                this.ctx.fillText(title, this.canvas.width / 2, this.canvas.height / 2 - 60);
+                this.ctx.shadowBlur = 0;
+                this.ctx.font = '30px Segoe UI';
+                this.ctx.fillText(sub, this.canvas.width / 2, this.canvas.height / 2);
+                this.ctx.fillStyle = '#fdb';
+                this.ctx.font = 'bold 24px Segoe UI';
+                // Pulse effect for CTA
+                let scale = 1 + Math.sin(Date.now() / 300) * 0.1;
+                this.ctx.save();
+                this.ctx.translate(this.canvas.width / 2, this.canvas.height / 2 + 80);
+                this.ctx.scale(scale, scale);
+                this.ctx.fillText(cta, 0, 0);
+                this.ctx.restore();
+            }
+
+            drawHUD() {
+                this.ctx.fillStyle = 'rgba(0,0,0,0.5)';
+                this.ctx.fillRect(20, 20, 250, 70);
+                this.ctx.strokeStyle = '#444';
+                this.ctx.lineWidth = 2;
+                this.ctx.strokeRect(20, 20, 250, 70);
+
+                for (let i = 0; i < this.player.maxHealth; i++) {
+                    let full = i < this.player.health;
+                    this.ctx.fillStyle = full ? COLORS.heart : '#400';
+                    this.ctx.beginPath();
+                    this.ctx.arc(50 + i * 35, 55, 12, 0, Math.PI * 2);
+                    this.ctx.fill();
+                    if (full) {
+                        this.ctx.shadowColor = '#f00';
+                        this.ctx.shadowBlur = 10;
+                        this.ctx.fill();
+                        this.ctx.shadowBlur = 0;
+                    }
+                }
+
+                this.ctx.fillStyle = '#fff';
+                this.ctx.font = 'bold 18px Segoe UI';
+                this.ctx.textAlign = 'right';
+                this.ctx.fillText("LVL " + (this.levelIndex + 1), 250, 50);
+                this.ctx.fillStyle = '#ccc';
+                this.ctx.font = '14px Segoe UI';
+                this.ctx.fillText("SCR " + this.score, 250, 75);
+            }
         }
 
         const game = new Game(document.getElementById('gameCanvas'));
