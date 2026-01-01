@@ -61,11 +61,117 @@
             border-radius: 15px;
             width: 80px;
         }
+
+        /* --- Virtual Gamepad CSS --- */
+        #virtualGamepad {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+            /* Let touches pass through to buttons but not block view */
+            z-index: 1000;
+            display: none;
+            /* Hidden on desktop by default */
+        }
+
+        @media (hover: none) and (pointer: coarse) {
+            #virtualGamepad {
+                display: block;
+            }
+        }
+
+        .d-pad,
+        .action-pad {
+            position: absolute;
+            bottom: 20px;
+            display: flex;
+            gap: 20px;
+            pointer-events: auto;
+            /* Enable touch on buttons */
+        }
+
+        .d-pad {
+            left: 30px;
+        }
+
+        .action-pad {
+            right: 30px;
+        }
+
+        .v-btn {
+            background: rgba(255, 255, 255, 0.15);
+            border: 2px solid rgba(255, 255, 255, 0.3);
+            border-radius: 50%;
+            backdrop-filter: blur(4px);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: rgba(255, 255, 255, 0.8);
+            font-family: 'Segoe UI', sans-serif;
+            font-weight: bold;
+            user-select: none;
+            touch-action: none;
+            box-shadow: 0 4px 10px rgba(0, 0, 0, 0.3);
+            transition: transform 0.1s, background 0.1s;
+        }
+
+        .v-btn:active {
+            transform: scale(0.92);
+            background: rgba(255, 255, 255, 0.25);
+            border-color: rgba(255, 255, 255, 0.6);
+        }
+
+        .btn-arrow {
+            width: 70px;
+            height: 70px;
+            font-size: 32px;
+            border-radius: 15px;
+            /* Square-ish for arrows */
+        }
+
+        .btn-action {
+            width: 80px;
+            height: 80px;
+            font-size: 24px;
+        }
+
+        .btn-attack {
+            background: rgba(255, 50, 50, 0.2);
+            border-color: rgba(255, 100, 100, 0.4);
+            font-size: 32px;
+        }
+
+        /* Hint for landscape mode */
+        @media screen and (orientation: portrait) {
+            #virtualGamepad::after {
+                content: "Best Played in Landscape!";
+                position: absolute;
+                top: 20%;
+                left: 50%;
+                transform: translateX(-50%);
+                color: rgba(255, 255, 255, 0.5);
+                font-size: 14px;
+                pointer-events: none;
+            }
+        }
     </style>
 </head>
 
 <body>
     <canvas id="gameCanvas"></canvas>
+
+    <div id="virtualGamepad">
+        <div class="d-pad">
+            <div class="v-btn btn-arrow" id="btnLeft">←</div>
+            <div class="v-btn btn-arrow" id="btnRight">→</div>
+        </div>
+        <div class="action-pad">
+            <div class="v-btn btn-action btn-attack" id="btnAttack">⚔️</div>
+            <div class="v-btn btn-action" id="btnJump">🦘</div>
+        </div>
+    </div>
 
 
 
@@ -120,111 +226,51 @@
 
         window.addEventListener('keyup', (e) => { if (keys.hasOwnProperty(e.code)) keys[e.code] = false; });
 
-        // --- Touch Gestures ---
-        const activeTouches = {};
-        const SWIPE_THRESHOLD = 30;
-        const TAP_THRESHOLD = 10;
-        const TAP_TIME = 200;
+        // --- Virtual Gamepad Logic ---
+        function setupButton(id, keyCodes) {
+            const btn = document.getElementById(id);
+            if (!btn) return;
 
+            // Handle both touch and mouse for testing on desktop if needed
+            const startHandler = (e) => {
+                if (e.cancelable) e.preventDefault();
+                keyCodes.forEach(k => {
+                    keys[k] = true;
+                    keyPresses[k] = true;
+                });
+                // Haptic feedback if available
+                if (window.navigator && window.navigator.vibrate) window.navigator.vibrate(5);
+            };
+
+            const endHandler = (e) => {
+                if (e.cancelable) e.preventDefault();
+                keyCodes.forEach(k => keys[k] = false);
+            };
+
+            btn.addEventListener('touchstart', startHandler, { passive: false });
+            btn.addEventListener('touchend', endHandler, { passive: false });
+            btn.addEventListener('touchcancel', endHandler, { passive: false });
+
+            // Mouse/Click Fallback for clicking with mouse
+            btn.addEventListener('mousedown', startHandler);
+            btn.addEventListener('mouseup', endHandler);
+            btn.addEventListener('mouseleave', endHandler);
+        }
+
+        setupButton('btnLeft', ['ArrowLeft']);
+        setupButton('btnRight', ['ArrowRight']);
+        setupButton('btnJump', ['ArrowUp', 'Space']);
+        setupButton('btnAttack', ['KeyF']);
+
+        // Global Touch Handler for Start/Restart (Tap anywhere NOT on a button)
         window.addEventListener('touchstart', (e) => {
-            e.preventDefault(); // Prevent default browser actions
-            // In Game Over or Start Screen: Tap anywhere to start
+            // Check if target is a button
+            if (e.target.closest('.v-btn')) return;
+
             if (game.state !== 'PLAYING') {
                 game.triggerRestart = true;
-                return;
-            }
-
-            for (let i = 0; i < e.changedTouches.length; i++) {
-                let t = e.changedTouches[i];
-                activeTouches[t.identifier] = {
-                    startX: t.clientX,
-                    startY: t.clientY,
-                    currX: t.clientX,
-                    currY: t.clientY,
-                    startTime: Date.now(),
-                    consumed: false
-                };
             }
         }, { passive: false });
-
-        window.addEventListener('touchmove', (e) => {
-            e.preventDefault();
-            for (let i = 0; i < e.changedTouches.length; i++) {
-                let t = e.changedTouches[i];
-                let tracked = activeTouches[t.identifier];
-                if (tracked && !tracked.consumed) {
-                    tracked.currX = t.clientX;
-                    tracked.currY = t.clientY;
-
-                    // Detect Swipe (Attack)
-                    let dx = tracked.currX - tracked.startX;
-                    let dy = tracked.currY - tracked.startY;
-                    let dist = Math.sqrt(dx * dx + dy * dy);
-
-                    if (dist > SWIPE_THRESHOLD) {
-                        // It's a swipe!
-                        keys.KeyF = true;
-                        keyPresses.KeyF = true;
-                        tracked.consumed = true; // Don't verify for tap or movement anymore
-                        // Can also determine direction of attack if needed
-                        // Reset move keys just in case
-                        keys.ArrowLeft = false;
-                        keys.ArrowRight = false;
-                    }
-                }
-            }
-        }, { passive: false });
-
-        window.addEventListener('touchend', (e) => {
-            e.preventDefault();
-            for (let i = 0; i < e.changedTouches.length; i++) {
-                let t = e.changedTouches[i];
-                let tracked = activeTouches[t.identifier];
-
-                if (tracked && !tracked.consumed) {
-                    let dt = Date.now() - tracked.startTime;
-                    let dx = tracked.currX - tracked.startX;
-                    let dy = tracked.currY - tracked.startY;
-                    let dist = Math.sqrt(dx * dx + dy * dy);
-
-                    // Detect Tap (Jump)
-                    if (dt < TAP_TIME && dist < TAP_THRESHOLD) {
-                        keys.ArrowUp = true;
-                        keyPresses.ArrowUp = true;
-                        keyPresses.Space = true; // Consistent jump
-
-                        // Reset jump key next frame effectively, but for continuous holding we assume tap is one-off
-                        setTimeout(() => { keys.ArrowUp = false; }, 100);
-                    }
-                }
-                delete activeTouches[t.identifier];
-            }
-            // Cleanup: if no touches left, stop moving
-            if (e.touches.length === 0) {
-                keys.ArrowLeft = false;
-                keys.ArrowRight = false;
-            }
-        });
-
-        // Loop for holding movement update
-        function updateTouchInputs() {
-            // Reset movement first
-            let movingLeft = false;
-            let movingRight = false;
-
-            for (let id in activeTouches) {
-                let t = activeTouches[id];
-                if (t.consumed) continue;
-
-                // Simple Screen Halves Logic
-                // Left 50% = Left, Right 50% = Right
-                if (t.currX < window.innerWidth / 2) movingLeft = true;
-                else movingRight = true;
-            }
-
-            keys.ArrowLeft = movingLeft;
-            keys.ArrowRight = movingRight;
-        }
 
         // Prevent default touch actions (scrolling/zooming) on the game interface
         document.addEventListener('gesturestart', (e) => { e.preventDefault(); });
@@ -438,10 +484,13 @@
                 ctx.fill();
 
                 // Head
-                ctx.fillStyle = '#000';
+                ctx.fillStyle = '#111';
+                ctx.shadowColor = '#000';
+                ctx.shadowBlur = 5;
                 ctx.beginPath();
                 ctx.arc(0, -20, 12, 0, Math.PI * 2);
                 ctx.fill();
+                ctx.shadowBlur = 0;
 
                 // Scarf
                 ctx.strokeStyle = COLORS.playerScarf;
@@ -556,9 +605,9 @@
                 ctx.fillStyle = this.color;
                 ctx.beginPath();
                 ctx.moveTo(-15, 20);
-                ctx.lineTo(-20, -10);
-                ctx.lineTo(0, -15);
-                ctx.lineTo(20, -5); // Hunchback
+                ctx.lineTo(-24, -12); // Spikier
+                ctx.lineTo(0, -18);
+                ctx.lineTo(24, -8); // Hunchback
                 ctx.lineTo(15, 20);
                 ctx.fill();
 
@@ -787,7 +836,7 @@
 
                 if (this.state !== 'PLAYING') return;
 
-                updateTouchInputs(); // Poll touch state for movement
+                // updateTouchInputs(); // REMOVED: Using Virtual Buttons now
                 this.player.update();
                 this.enemies.forEach(e => e.update());
                 this.enemies = this.enemies.filter(e => !e.markedForDeletion);
