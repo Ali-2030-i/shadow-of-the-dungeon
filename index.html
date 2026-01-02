@@ -15,8 +15,9 @@
 
         canvas {
             display: block;
-            touch-action: none;
         }
+
+
 
 
 
@@ -207,8 +208,61 @@
             portalOne: '#0ff',
             portalTwo: '#f0f',
             slash: '#fff',
-            textShadow: 'rgba(0,0,0,0.8)'
+            textShadow: 'rgba(0,0,0,0.8)',
+            shield: '#66aa99',
+            shieldHit: '#aaf',
+            mageBody: '#408',
+            mageProjectile: '#a0f',
+            kamikazeFlash: '#ff0',
+            eliteGlow: '#f0f'
         };
+
+        const SKINS = {
+            DEFAULT: { id: 'DEFAULT', name: 'Wanderer', body: '#333', scarf: '#f22' },
+            VETERAN: { id: 'VETERAN', name: 'Veteran (1000 Pts)', body: '#435', scarf: '#fd0', unlockScore: 1000 },
+            SHADOW: { id: 'SHADOW', name: 'Shadow (100 Kills)', body: '#111', scarf: '#eee', unlockKills: 100 }
+        };
+
+        const BIOME_DATA = {
+            DUNGEON: {
+                bgGradient1: '#1a1a1a', bgGradient2: '#000000',
+                platformTop: '#1a1', platformBody: '#222',
+                friction: 0.82
+            },
+            LAVA: { // Levels 2-3
+                bgGradient1: '#310', bgGradient2: '#100',
+                platformTop: '#ca0', platformBody: '#410',
+                friction: 0.82
+            },
+            ICE: { // Levels 4-5
+                bgGradient1: '#012', bgGradient2: '#001',
+                platformTop: '#aff', platformBody: '#224',
+                friction: 0.96 // Low friction
+            },
+            VOID: { // Levels 6+
+                bgGradient1: '#202', bgGradient2: '#000',
+                platformTop: '#d0d', platformBody: '#101',
+                friction: 0.82
+            }
+        };
+
+        const ENEMY_STATE = {
+            IDLE: 0,
+            CHASE: 1,
+            ATTACK: 2,
+            RETREAT: 3,
+            STUNNED: 4,
+            DEAD: 5,
+            BLOCK: 6
+        };
+
+        const UPGRADES = [
+            { id: 'VITALITY', name: "Vitality", desc: "+1 Max HP & Full Heal" },
+            { id: 'STRENGTH', name: "Strength", desc: "+Damage (Kill enemies faster)" },
+            { id: 'AGILITY', name: "Agility", desc: "+20% Move Speed" },
+            { id: 'REACH', name: "Reach", desc: "+30% Attack Range" },
+            { id: 'HASTE', name: "Haste", desc: "-20% Attack Cooldown" }
+        ];
 
         // --- Input Handling ---
         const keys = { ArrowLeft: false, ArrowRight: false, ArrowUp: false, Space: false, KeyF: false };
@@ -221,9 +275,16 @@
             }
             if (e.code === 'ArrowUp') keyPresses['Space'] = true;
             if (e.code === 'Space') keyPresses['ArrowUp'] = true;
+            if (e.code === 'KeyT' && game && game.state === 'START') {
+                // Cycle Skins
+                let unlocked = game.saveData.unlockedSkins;
+                let idx = unlocked.indexOf(game.saveData.currentSkin);
+                idx = (idx + 1) % unlocked.length;
+                game.saveData.currentSkin = unlocked[idx];
+                game.skin = SKINS[game.saveData.currentSkin];
+                SaveManager.save(game.saveData);
+            }
         });
-        window.addEventListener('keyup', (e) => { if (keys.hasOwnProperty(e.code)) keys[e.code] = false; });
-
         window.addEventListener('keyup', (e) => { if (keys.hasOwnProperty(e.code)) keys[e.code] = false; });
 
         // --- Virtual Gamepad Logic ---
@@ -257,6 +318,13 @@
             btn.addEventListener('mouseleave', endHandler);
         }
 
+
+        // --- Sound Init Hook ---
+        const initSound = () => { SoundManager.init(); window.removeEventListener('click', initSound); window.removeEventListener('keydown', initSound); };
+        window.addEventListener('click', initSound);
+        window.addEventListener('keydown', initSound);
+        window.addEventListener('touchstart', initSound);
+
         setupButton('btnLeft', ['ArrowLeft']);
         setupButton('btnRight', ['ArrowRight']);
         setupButton('btnJump', ['ArrowUp', 'Space']);
@@ -268,7 +336,11 @@
             if (e.target.closest('.v-btn')) return;
 
             if (game.state !== 'PLAYING') {
-                game.triggerRestart = true;
+                if (game.state === 'LEVEL_UP') {
+                    game.handleLevelUpClick(e.touches[0].clientX, e.touches[0].clientY);
+                } else {
+                    game.triggerRestart = true;
+                }
             }
         }, { passive: false });
 
@@ -288,7 +360,195 @@
             }
         }
 
+        class MovingPlatform extends Box {
+            constructor(x, y, w, h, rangeX, rangeY, speed) {
+                super(x, y, w, h);
+                this.startPos = new Vector2(x, y);
+                this.rangeX = rangeX;
+                this.rangeY = rangeY;
+                this.speed = speed;
+                this.time = Math.random() * 100;
+                this.delta = new Vector2(0, 0);
+            }
+            update() {
+                this.time += this.speed;
+                let prevX = this.pos.x;
+                let prevY = this.pos.y;
+
+                if (this.rangeX > 0) this.pos.x = this.startPos.x + Math.sin(this.time) * this.rangeX;
+                if (this.rangeY > 0) this.pos.y = this.startPos.y + Math.sin(this.time) * this.rangeY;
+
+                this.delta.x = this.pos.x - prevX;
+                this.delta.y = this.pos.y - prevY;
+            }
+            draw(ctx) {
+                ctx.fillStyle = COLORS.platformBody;
+                ctx.fillRect(this.pos.x, this.pos.y, this.w, this.h);
+
+                // Gears
+                ctx.fillStyle = '#666';
+                ctx.beginPath();
+                ctx.arc(this.pos.x + 10, this.pos.y + this.h / 2, 6, 0, Math.PI * 2);
+                ctx.arc(this.pos.x + this.w - 10, this.pos.y + this.h / 2, 6, 0, Math.PI * 2);
+                ctx.fill();
+
+                // Top
+                ctx.fillStyle = COLORS.platformTop;
+                ctx.fillRect(this.pos.x, this.pos.y, this.w, 4);
+            }
+        }
+
+        class CrumblingPlatform extends Box {
+            constructor(x, y, w, h) {
+                super(x, y, w, h);
+                this.triggered = false;
+                this.crumbleTimer = 30; // 0.5 sec shake then fall
+                this.fallen = false;
+                this.origPos = new Vector2(x, y);
+            }
+            trigger() {
+                if (!this.triggered) {
+                    this.triggered = true;
+                    SoundManager.playTone(100, 'sawtooth', 0.1, 0.1); // Crack sound
+                }
+            }
+            update() {
+                if (this.triggered && !this.fallen) {
+                    this.crumbleTimer--;
+                    // Shake
+                    this.pos.x = this.origPos.x + (Math.random() * 4 - 2);
+                    this.pos.y = this.origPos.y + (Math.random() * 4 - 2);
+
+                    if (this.crumbleTimer <= 0) {
+                        this.fallen = true;
+                    }
+                } else if (this.fallen) {
+                    this.pos.y += 10; // Fall fast
+                } else {
+                    this.pos.x = this.origPos.x;
+                    this.pos.y = this.origPos.y;
+                }
+            }
+            draw(ctx) {
+                if (this.fallen && this.pos.y > 1000) return;
+
+                ctx.fillStyle = this.triggered ? '#655' : COLORS.platformBody;
+                ctx.fillRect(this.pos.x, this.pos.y, this.w, this.h);
+
+                // Cracks
+                if (this.triggered) {
+                    ctx.strokeStyle = '#000';
+                    ctx.beginPath();
+                    ctx.moveTo(this.pos.x + 5, this.pos.y);
+                    ctx.lineTo(this.pos.x + 15, this.pos.y + 20);
+                    ctx.lineTo(this.pos.x + 35, this.pos.y + 5);
+                    ctx.stroke();
+                }
+
+                ctx.fillStyle = COLORS.platformTop;
+                ctx.fillRect(this.pos.x, this.pos.y, this.w, 3);
+            }
+        }
+
         // --- Visual Effects ---
+        class FloatingText {
+            constructor(x, y, text, color) {
+                this.x = x;
+                this.y = y;
+                this.text = text;
+                this.color = color;
+                this.life = 40;
+                this.alpha = 1;
+            }
+            update() {
+                this.y -= 0.6;
+                this.life--;
+                this.alpha = this.life / 40;
+            }
+            draw(ctx) {
+                if (this.life <= 0) return;
+                ctx.save();
+                ctx.globalAlpha = this.alpha;
+                ctx.fillStyle = this.color;
+                ctx.font = 'bold 16px Segoe UI';
+                ctx.shadowColor = '#000';
+                ctx.shadowBlur = 2;
+                ctx.fillText(this.text, this.x, this.y);
+                ctx.restore();
+            }
+        }
+
+        const SoundManager = {
+            ctx: null,
+            init() {
+                if (!this.ctx) {
+                    this.ctx = new (window.AudioContext || window.webkitAudioContext)();
+                }
+                if (this.ctx.state === 'suspended') {
+                    this.ctx.resume();
+                }
+            },
+            playTone(freq, type, duration, vol = 0.1) {
+                if (!this.ctx) return;
+                const osc = this.ctx.createOscillator();
+                const gain = this.ctx.createGain();
+                osc.type = type;
+                osc.frequency.setValueAtTime(freq, this.ctx.currentTime);
+                gain.gain.setValueAtTime(vol, this.ctx.currentTime);
+                gain.gain.exponentialRampToValueAtTime(0.01, this.ctx.currentTime + duration);
+                osc.connect(gain);
+                gain.connect(this.ctx.destination);
+                osc.start();
+                osc.stop(this.ctx.currentTime + duration);
+            },
+            playJump() {
+                if (!this.ctx) return;
+                const osc = this.ctx.createOscillator();
+                const gain = this.ctx.createGain();
+                osc.frequency.setValueAtTime(150, this.ctx.currentTime);
+                osc.frequency.linearRampToValueAtTime(300, this.ctx.currentTime + 0.1);
+                gain.gain.setValueAtTime(0.1, this.ctx.currentTime);
+                gain.gain.linearRampToValueAtTime(0.01, this.ctx.currentTime + 0.1);
+                osc.connect(gain);
+                gain.connect(this.ctx.destination);
+                osc.start();
+                osc.stop(this.ctx.currentTime + 0.1);
+            },
+            playHit() { // Player damaged
+                this.playTone(100, 'sawtooth', 0.2, 0.2);
+            },
+            playEnemyHit() {
+                this.playTone(200, 'square', 0.1, 0.1);
+            },
+            playKill() {
+                if (!this.ctx) return;
+                // Simple noise burst approximation using multiple oscillators
+                for (let i = 0; i < 3; i++) {
+                    this.playTone(100 + Math.random() * 200, 'sawtooth', 0.2, 0.1);
+                }
+            }
+        };
+
+        const SaveManager = {
+            load() {
+                let data = localStorage.getItem('sotd_save');
+                if (data) return JSON.parse(data);
+                return { highScore: 0, totalKills: 0, unlockedSkins: ['DEFAULT'], currentSkin: 'DEFAULT' };
+            },
+            save(data) {
+                localStorage.setItem('sotd_save', JSON.stringify(data));
+            },
+            checkUnlocks(data) {
+                if (data.highScore >= 1000 && !data.unlockedSkins.includes('VETERAN')) {
+                    data.unlockedSkins.push('VETERAN');
+                    game.floatingTexts.push(new FloatingText(game.canvas.width / 2, 200, "SKIN UNLOCKED: VETERAN", "#fd0"));
+                }
+                // Mock kill verification
+                // if (data.totalKills >= 100 ...)
+            }
+        };
+
+        // --- Entities ---
         class Particle {
             constructor(x, y, color, speed, size, life) {
                 this.x = x; this.y = y;
@@ -355,6 +615,42 @@
                         }
                     }
                 }
+
+                // Check Special Platforms
+                if (game.level) {
+                    for (let mp of game.level.movingPlatforms) {
+                        // Allow standing on top, but moving through from bottom/sides is okay for simplicity or solid?
+                        // Let's treat as solid for now similar to regular plats
+                        if (this.overlaps(mp)) {
+                            if (horizontal) {
+                                if (this.vel.x > 0) this.pos.x = mp.pos.x - this.w;
+                                else if (this.vel.x < 0) this.pos.x = mp.pos.x + mp.w;
+                                this.vel.x = 0;
+                            } else {
+                                if (this.vel.y > 0 && this.pos.y + this.h < mp.pos.y + mp.h) { // Landing on top
+                                    this.pos.y = mp.pos.y - this.h;
+                                    this.grounded = true;
+                                    this.pos.x += mp.delta.x; // Carry player
+                                    this.pos.y += mp.delta.y;
+                                } else if (this.vel.y < 0) {
+                                    this.pos.y = mp.pos.y + mp.h;
+                                    this.vel.y = 0;
+                                }
+                            }
+                        }
+                    }
+
+                    for (let cp of game.level.crumblingPlatforms) {
+                        if (!cp.fallen && this.overlaps(cp)) {
+                            if (!horizontal && this.vel.y > 0 && this.pos.y + this.h < cp.pos.y + cp.h) {
+                                this.pos.y = cp.pos.y - this.h;
+                                this.grounded = true;
+                                this.vel.y = 0;
+                                cp.trigger();
+                            }
+                        }
+                    }
+                }
             }
         }
 
@@ -372,16 +668,19 @@
             }
             update() {
                 // Input
+                let speed = PLAYER_SPEED * (this.speedMult || 1);
                 if (keys.ArrowRight) {
-                    this.vel.x += PLAYER_SPEED;
+                    this.vel.x += speed;
                     this.facingRight = true;
                     this.animTimer++;
                 } else if (keys.ArrowLeft) {
-                    this.vel.x -= PLAYER_SPEED;
+                    this.vel.x -= speed;
                     this.facingRight = false;
                     this.animTimer++;
                 } else {
-                    this.vel.x *= FRICTION;
+                    // Biome Friction
+                    let currentFriction = (game.level && game.level.biome) ? game.level.biome.friction : FRICTION;
+                    this.vel.x *= currentFriction;
                     this.animTimer = 0;
                 }
                 if (Math.abs(this.vel.x) > PLAYER_MAX_SPEED) this.vel.x = Math.sign(this.vel.x) * PLAYER_MAX_SPEED;
@@ -393,10 +692,12 @@
                         this.vel.y = -JUMP_FORCE;
                         this.jumpCount = 1;
                         this.spawnDust();
+                        SoundManager.playJump();
                     } else if (this.jumpCount < 2) {
                         this.vel.y = -DOUBLE_JUMP_FORCE;
                         this.jumpCount++;
                         this.spawnDust();
+                        SoundManager.playJump();
                     }
                     keyPresses.Space = false; keyPresses.ArrowUp = false;
                 }
@@ -405,7 +706,8 @@
                 if (this.attackCooldown > 0) this.attackCooldown--;
                 if (keyPresses.KeyF && this.attackCooldown <= 0) {
                     this.attackTimer = ATTACK_DURATION;
-                    this.attackCooldown = ATTACK_COOLDOWN;
+                    let cd = ATTACK_COOLDOWN * (this.cooldownMult || 1);
+                    this.attackCooldown = cd;
                     this.checkAttackHit();
                     keyPresses.KeyF = false;
                     // Lunge forward slightly
@@ -445,18 +747,44 @@
                 this.health -= amount;
                 this.invulnerable = INVULNERABILITY_TIME;
                 game.shakeScreen(15);
+                game.freezeFrames = 10;
+                game.floatingTexts.push(new FloatingText(this.pos.x + this.w / 2, this.pos.y, "-1 HP", "#f00"));
+                SoundManager.playHit();
                 if (this.health <= 0) game.gameOver();
             }
             checkAttackHit() {
-                let range = 80;
+                let range = 80 * (this.reachMult || 1);
                 let hitX = this.facingRight ? this.pos.x + this.w : this.pos.x - range;
                 let hitBox = new Box(hitX, this.pos.y - 10, range, this.h + 20); // Larger hitbox
                 let hit = false;
                 for (let enemy of game.enemies) {
                     if (hitBox.overlaps(enemy) && !enemy.dead) {
-                        enemy.die();
-                        game.score += 100 * (game.levelIndex + 1);
-                        hit = true;
+                        // Check if ShieldGoblin blocked from front
+                        let attackFromRight = this.pos.x < enemy.pos.x; // Player is to the left of enemy (attacking RIGHT)
+                        // Wait, 'fromRight' argument meant 'is damage source right of entity?'
+                        // No, let's pass 'isPlayerRightOfEnemy'
+
+                        let successfulHit = false;
+                        if (typeof enemy.takeHit === 'function') {
+                            let dmg = 1 * (this.damageMult || 1);
+                            successfulHit = enemy.takeHit(dmg, this.pos.x > enemy.pos.x);
+                        } else {
+                            // Fallback
+                            enemy.die();
+                            successfulHit = true;
+                        }
+
+                        if (successfulHit) {
+                            game.score += 100 * (game.levelIndex + 1);
+                            game.addXp(50); // XP Gain
+                            hit = true;
+                            game.freezeFrames = 6; // Kill freeze
+                            game.floatingTexts.push(new FloatingText(enemy.pos.x + enemy.w / 2, enemy.pos.y, "+100", "#ffd700"));
+                            SoundManager.playKill();
+                        } else {
+                            // Blocked logic handled inside takeHit
+                            game.freezeFrames = 2; // Small freeze for block
+                        }
                     }
                 }
                 if (hit) game.shakeScreen(6);
@@ -475,7 +803,13 @@
                 let capeLift = -Math.abs(speedRatio) * 15;
                 if (!this.grounded) capeLift -= 10;
 
-                ctx.fillStyle = COLORS.player;
+                if (!this.grounded) capeLift -= 10;
+
+                // Skin Colors
+                let bodyColor = game.skin ? game.skin.body : COLORS.player;
+                let scarfColor = game.skin ? game.skin.scarf : COLORS.playerScarf;
+
+                ctx.fillStyle = bodyColor;
                 ctx.beginPath();
                 ctx.moveTo(-10, -20); // Neck
                 ctx.quadraticCurveTo(-25, 0 + capeLift, -20, 30 + capeLift); // Back of cape
@@ -493,7 +827,7 @@
                 ctx.shadowBlur = 0;
 
                 // Scarf
-                ctx.strokeStyle = COLORS.playerScarf;
+                ctx.strokeStyle = scarfColor;
                 ctx.lineWidth = 4;
                 ctx.beginPath();
                 ctx.moveTo(0, -15);
@@ -531,20 +865,96 @@
             }
         }
 
+        class Projectile extends Box {
+            constructor(x, y, vx, vy, owner) {
+                super(x, y, 15, 15);
+                this.vel = new Vector2(vx, vy);
+                this.owner = owner;
+                this.life = 120;
+                this.markedForDeletion = false;
+            }
+            update() {
+                this.pos.x += this.vel.x;
+                this.pos.y += this.vel.y;
+                this.life--;
+
+                if (this.life <= 0) this.markedForDeletion = true;
+
+                // Ground Collision
+                if (game.level) {
+                    for (let plat of game.level.platforms) {
+                        if (this.overlaps(plat)) {
+                            this.markedForDeletion = true;
+                            // Poof effect
+                            for (let i = 0; i < 3; i++) game.particles.push(new Particle(this.pos.x + 7, this.pos.y + 7, COLORS.mageProjectile, 2, 3, 10));
+                        }
+                    }
+                }
+
+                // Player Collision
+                if (this.owner !== 'PLAYER' && this.overlaps(game.player)) {
+                    game.player.takeDamage(1);
+                    this.markedForDeletion = true;
+                }
+            }
+            draw(ctx) {
+                ctx.save();
+                ctx.translate(this.pos.x + 7, this.pos.y + 7);
+                ctx.rotate(Date.now() / 50);
+                ctx.fillStyle = COLORS.mageProjectile;
+                ctx.fillRect(-6, -6, 12, 12);
+                ctx.restore();
+            }
+        }
+
         class Enemy extends Entity {
             constructor(x, y, w, h, color) {
                 super(x, y, w, h);
                 this.color = color;
                 this.dead = false;
                 this.hp = 1;
+                this.state = ENEMY_STATE.IDLE;
+                this.stateTimer = 0;
+                this.facingRight = true;
+                this.alertRange = 350;
+                this.attackRange = 40;
+                this.isElite = false;
+            }
+            makeElite() {
+                this.isElite = true;
+                this.hp *= 2;
+                this.w *= 1.2;
+                this.h *= 1.2;
+                this.speed *= 1.4;
+            }
+            changeState(newState) {
+                this.state = newState;
+                this.stateTimer = 0;
+            }
+            takeHit(damage, fromRight) {
+                // Base behavior, can be overridden
+                this.hp -= damage;
+                SoundManager.playEnemyHit();
+                if (this.hp <= 0) {
+                    this.die();
+                    return true;
+                }
+                return false;
             }
             die() {
+                if (this.dead) return;
                 this.dead = true;
                 this.markedForDeletion = true;
                 for (let i = 0; i < 15; i++) {
                     game.particles.push(new Particle(this.pos.x + this.w / 2, this.pos.y + this.h / 2, this.color, 4, 6, 30));
                     game.particles.push(new Particle(this.pos.x + this.w / 2, this.pos.y + this.h / 2, '#fff', 6, 3, 10)); // Spark
                 }
+            }
+            update() {
+                super.update();
+                this.stateTimer++;
+                // Generic check for fall
+                if (this.pos.y > 1000) this.markedForDeletion = true;
             }
         }
 
@@ -554,7 +964,6 @@
                 this.hp = 2 + Math.floor(game.levelIndex / 3);
                 this.speed = 1.5 + (game.levelIndex * 0.1);
                 this.dir = 1;
-                this.aggro = false;
             }
             update() {
                 if (this.dead) return;
@@ -563,32 +972,31 @@
                 let dist = game.player.pos.x - this.pos.x;
                 let heightDiff = Math.abs(game.player.pos.y - this.pos.y);
 
-                // Aggro Logic
-                if (Math.abs(dist) < 350 && heightDiff < 80) this.aggro = true;
-                else this.aggro = false;
-
-                if (this.aggro) {
-                    this.vel.x = Math.sign(dist) * (this.speed * 1.8);
-                } else {
+                // Simple AI logic
+                if (this.state === ENEMY_STATE.IDLE) {
                     this.vel.x = this.dir * this.speed;
-                }
-
-                // Ledge Detection
-                if (this.grounded) {
-                    let ahead = this.pos.x + (this.vel.x > 0 ? this.w + 10 : -10);
-                    let groundAhead = false;
-                    // Only check if not aggro or if aggro but safe? 
-                    // Ghouls are dumb, they might fall if aggroed in "Ascension" mode to be scary
-                    // But let's keep them on platforms for now so they don't disappear
-                    for (let p of game.level.platforms) {
-                        if (ahead > p.pos.x && ahead < p.pos.x + p.w && this.pos.y + this.h + 2 > p.pos.y) {
-                            groundAhead = true; break;
+                    if (Math.abs(dist) < this.alertRange && heightDiff < 100) {
+                        this.changeState(ENEMY_STATE.CHASE);
+                    }
+                    // Patrol turn around
+                    if (this.grounded) {
+                        let ahead = this.pos.x + (this.vel.x > 0 ? this.w + 10 : -10);
+                        let safe = false;
+                        for (let p of game.level.platforms) {
+                            if (ahead > p.pos.x && ahead < p.pos.x + p.w && this.pos.y + this.h + 2 > p.pos.y) {
+                                safe = true; break;
+                            }
+                        }
+                        if (!safe) {
+                            this.dir *= -1;
+                            this.vel.x *= -1;
                         }
                     }
-                    if (!groundAhead) {
-                        this.dir *= -1;
-                        this.vel.x *= -1; // Bounce immediately
-                    }
+                } else if (this.state === ENEMY_STATE.CHASE) {
+                    this.facingRight = dist > 0;
+                    this.vel.x = Math.sign(dist) * (this.speed * 1.8);
+
+                    if (Math.abs(dist) > this.alertRange * 1.5) this.changeState(ENEMY_STATE.IDLE);
                 }
             }
             draw(ctx) {
@@ -597,9 +1005,14 @@
                 ctx.translate(this.pos.x + this.w / 2, this.pos.y + this.h / 2);
                 if (this.vel.x < 0) ctx.scale(-1, 1);
 
-                // Aura
-                ctx.shadowBlur = 10;
-                ctx.shadowColor = COLORS.ghoulGlow;
+                // Glow if Elite
+                if (this.isElite) {
+                    ctx.shadowBlur = 15;
+                    ctx.shadowColor = COLORS.eliteGlow;
+                } else {
+                    ctx.shadowBlur = 10;
+                    ctx.shadowColor = COLORS.ghoulGlow;
+                }
 
                 // Body (Jagged)
                 ctx.fillStyle = this.color;
@@ -610,7 +1023,6 @@
                 ctx.lineTo(24, -8); // Hunchback
                 ctx.lineTo(15, 20);
                 ctx.fill();
-
                 ctx.shadowBlur = 0;
 
                 // Eyes (Glowing)
@@ -618,10 +1030,233 @@
                 ctx.beginPath(); ctx.arc(8, -5, 3, 0, Math.PI * 2); ctx.fill();
 
                 // Mouth
-                if (this.aggro) {
+                if (this.state === ENEMY_STATE.CHASE) {
                     ctx.fillStyle = '#000';
                     ctx.beginPath(); ctx.moveTo(5, 5); ctx.lineTo(15, 10); ctx.lineTo(5, 15); ctx.fill();
                 }
+                ctx.restore();
+            }
+        }
+
+        class ShieldGoblin extends Enemy {
+            constructor(x, y) {
+                super(x, y, 45, 45, '#464');
+                this.hp = 3 + Math.floor(game.levelIndex / 2);
+                this.speed = 0.8;
+                this.shieldUp = true;
+            }
+            takeHit(damage, fromRight) { // fromRight = is damage coming from Right side?
+                // Logic: if facing Right and hit from Right -> BLOCK
+                // Logic: if facing Left and hit from Left -> BLOCK
+                // Actually passed arg from player is slightly different usually. 
+                // Let's rely on position check inside logic or pass source X
+
+                // Re-calculating direction context locally to be sure
+                let hitFromFront = (this.facingRight && fromRight) || (!this.facingRight && !fromRight);
+
+                if (hitFromFront) {
+                    game.floatingTexts.push(new FloatingText(this.pos.x + this.w / 2, this.pos.y, "BLOCKED", "#fff"));
+                    SoundManager.playTone(80, 'square', 0.05, 0.1); // Metalsound
+                    // Slight knockback
+                    this.vel.x = this.facingRight ? -2 : 2;
+                    return false;
+                }
+                return super.takeHit(damage);
+            }
+            update() {
+                if (this.dead) return;
+                super.update();
+                let dist = game.player.pos.x - this.pos.x;
+                this.facingRight = this.vel.x > 0;
+
+                if (Math.abs(dist) < this.alertRange) {
+                    // Always face player when close
+                    this.facingRight = dist > 0;
+                    this.vel.x = (dist > 0 ? 1 : -1) * this.speed;
+                } else {
+                    this.vel.x = 0;
+                }
+            }
+            draw(ctx) {
+                if (this.dead) return;
+                ctx.save();
+                ctx.translate(this.pos.x + this.w / 2, this.pos.y + this.h / 2);
+                if (!this.facingRight) ctx.scale(-1, 1);
+
+                // Body
+                ctx.fillStyle = '#464';
+                ctx.fillRect(-15, -20, 30, 40);
+
+                // Shield
+                ctx.fillStyle = COLORS.shield;
+                ctx.strokeStyle = '#fff';
+                ctx.lineWidth = 2;
+                ctx.beginPath();
+                ctx.rect(10, -15, 10, 35);
+                ctx.fill(); ctx.stroke();
+
+                // Eyes
+                ctx.fillStyle = '#faa';
+                ctx.beginPath(); ctx.arc(-5, -10, 2, 0, Math.PI * 2); ctx.fill();
+
+                ctx.restore();
+            }
+        }
+
+        class Mage extends Enemy {
+            constructor(x, y) {
+                super(x, y, 35, 55, COLORS.mageBody);
+                this.hp = 2 + Math.floor(game.levelIndex / 3);
+                this.speed = 1.2;
+                this.cooldown = 100;
+            }
+            update() {
+                if (this.dead) return;
+                super.update();
+                let dist = game.player.pos.x - this.pos.x;
+                let absDist = Math.abs(dist);
+
+                this.facingRight = dist > 0;
+
+                if (absDist < 200) {
+                    // Retreat
+                    this.changeState(ENEMY_STATE.RETREAT);
+                    this.vel.x = (dist > 0 ? -1 : 1) * this.speed;
+                } else if (absDist < 500 && this.cooldown <= 0) {
+                    // Attack
+                    this.changeState(ENEMY_STATE.ATTACK);
+                    this.vel.x = 0;
+                    this.cooldown = 180 + Math.random() * 60;
+                    this.stateTimer = 40; // Windup
+                } else {
+                    this.vel.x = 0;
+                    this.changeState(ENEMY_STATE.IDLE);
+                }
+
+                if (this.state === ENEMY_STATE.ATTACK) {
+                    if (this.stateTimer === 10) {
+                        // Shoot
+                        let dir = this.facingRight ? 1 : -1;
+                        game.projectiles.push(new Projectile(this.pos.x + (dir * 20), this.pos.y, dir * 5, 0, 'ENEMY'));
+                        SoundManager.playTone(400, 'sine', 0.2, 0.1);
+                    }
+                }
+                if (this.cooldown > 0) this.cooldown--;
+            }
+            draw(ctx) {
+                if (this.dead) return;
+                ctx.save();
+                ctx.translate(this.pos.x + this.w / 2, this.pos.y + this.h / 2);
+                if (!this.facingRight) ctx.scale(-1, 1);
+
+                // Robe
+                ctx.fillStyle = this.color;
+                ctx.beginPath();
+                ctx.moveTo(0, -25);
+                ctx.lineTo(-15, 25);
+                ctx.lineTo(15, 25);
+                ctx.fill();
+
+                // Hat
+                ctx.fillStyle = '#306';
+                ctx.beginPath();
+                ctx.moveTo(-20, -20);
+                ctx.lineTo(20, -20);
+                ctx.lineTo(0, -50);
+                ctx.fill();
+
+                // Windup Effect
+                if (this.state === ENEMY_STATE.ATTACK && this.stateTimer > 10) {
+                    ctx.fillStyle = COLORS.mageProjectile;
+                    ctx.beginPath();
+                    ctx.arc(20, -5, Math.random() * 8, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+
+                ctx.restore();
+            }
+        }
+
+        class Kamikaze extends Enemy {
+            constructor(x, y) {
+                super(x, y, 30, 30, COLORS.kamikazeBody);
+                this.hp = 1;
+                this.speed = 3.5;
+                this.exploded = false;
+            }
+            update() {
+                if (this.dead) return;
+                super.update();
+                let dist = game.player.pos.x - this.pos.x;
+                let absDist = Math.abs(dist);
+
+                if (!this.exploded && absDist < 400 && Math.abs(game.player.pos.y - this.pos.y) < 100) {
+                    this.changeState(ENEMY_STATE.CHASE);
+                }
+
+                if (this.state === ENEMY_STATE.CHASE) {
+                    this.vel.x = Math.sign(dist) * this.speed;
+                    // Jump small obstacles
+                    if (this.vel.x !== 0 && this.grounded && Math.random() < 0.05) this.vel.y = -8;
+
+                    if (absDist < 40) {
+                        this.changeState(ENEMY_STATE.ATTACK);
+                        this.vel.x = 0;
+                        this.stateTimer = 40; // Fuse
+                    }
+                }
+
+                if (this.state === ENEMY_STATE.ATTACK) {
+                    if (this.stateTimer <= 0) {
+                        this.explode();
+                    }
+                    // Sound pitch up
+                    if (this.stateTimer % 10 === 0) SoundManager.playTone(200 + (40 - this.stateTimer) * 10, 'sawtooth', 0.05, 0.05);
+                }
+            }
+            explode() {
+                this.dead = true;
+                this.markedForDeletion = true;
+                this.exploded = true;
+                game.shakeScreen(20);
+                SoundManager.playKill(); // Boom
+                // Area Damage
+                let blastRadius = 120;
+                let dx = game.player.pos.x - this.pos.x;
+                let dy = game.player.pos.y - this.pos.y;
+                let d = Math.sqrt(dx * dx + dy * dy);
+                if (d < blastRadius) {
+                    game.player.takeDamage(2);
+                    game.player.vel.x = Math.sign(dx) * 15;
+                    game.player.vel.y = -10;
+                }
+                // Visuals
+                for (let i = 0; i < 30; i++) {
+                    game.particles.push(new Particle(this.pos.x, this.pos.y, COLORS.kamikazeFlash, 5, 5, 40));
+                }
+            }
+            draw(ctx) {
+                if (this.dead) return;
+                ctx.save();
+                ctx.translate(this.pos.x + this.w / 2, this.pos.y + this.h / 2);
+
+                if (this.state === ENEMY_STATE.ATTACK) {
+                    let shake = Math.random() * 4 - 2;
+                    ctx.translate(shake, shake);
+                    if (Math.floor(Date.now() / 50) % 2 === 0) ctx.fillStyle = '#fff';
+                    else ctx.fillStyle = COLORS.kamikazeBody;
+                } else {
+                    ctx.fillStyle = COLORS.kamikazeBody;
+                }
+
+                ctx.beginPath();
+                ctx.arc(0, 0, 15, 0, Math.PI * 2);
+                ctx.fill();
+
+                // Face
+                ctx.fillStyle = '#000';
+                ctx.fillRect(-5, -5, 10, 4); // Eyes
+                ctx.fillRect(-3, 5, 6, 6); // Mouth screaming
 
                 ctx.restore();
             }
@@ -699,23 +1334,39 @@
         // --- Procedural Generation ---
 
         class Level {
-            constructor(platforms, spikes, enemies, portalPos) {
+            constructor(platforms, spikes, enemies, portalPos, biome) {
                 this.platforms = platforms;
                 this.spikes = spikes;
                 this.enemies = enemies; // Live array
                 this.portal = new Box(portalPos.x, portalPos.y, 50, 80);
+                this.biome = biome;
+                this.movingPlatforms = [];
+                this.crumblingPlatforms = [];
             }
         }
 
         class LevelGenerator {
+
+            static getBiome(levelIndex) {
+                if (levelIndex < 2) return BIOME_DATA.DUNGEON;
+                if (levelIndex < 4) return BIOME_DATA.LAVA;
+                if (levelIndex < 6) return BIOME_DATA.ICE;
+                return BIOME_DATA.VOID;
+            }
+
             // Chunks are functions that return objects relative to an offset X, Y
             static generate(levelNum) {
                 let chunksCount = 4 + Math.floor(levelNum * 0.8); // Level 1=4 chunks, Level 5=8 chunks
                 if (chunksCount > 20) chunksCount = 20; // Cap length
 
+                let biome = LevelGenerator.getBiome(levelNum);
+
                 let platforms = [];
                 let spikes = [];
                 let enemies = [];
+                let movingPlats = [];
+                let crumblePlats = [];
+
                 let currentX = 0;
                 let currentY = 500; // Start height
 
@@ -724,9 +1375,12 @@
                 currentX += 400;
 
                 for (let i = 0; i < chunksCount; i++) {
-                    let chunkType = Math.floor(Math.random() * 5);
+                    let chunkType = Math.floor(Math.random() * 6); // More options
                     // Force easier chunks for first level/first chunk
                     if (levelNum === 0 && i === 0) chunkType = 0;
+
+                    // Void Biome has more floating/moving stuff
+                    if (levelNum >= 6 && Math.random() < 0.4) chunkType = 5;
 
                     let chunkWidth = 0;
 
@@ -736,27 +1390,45 @@
                             platforms.push(new Box(currentX, currentY, chunkWidth, 50));
                             if (Math.random() > 0.5) enemies.push(new Ghoul(currentX + 200, currentY - 50));
                             break;
-                        case 1: // Gap Jump
-                            chunkWidth = 200;
-                            // Gap of 150
-                            currentX += 150;
-                            platforms.push(new Box(currentX, currentY, chunkWidth, 50));
+
+                        case 1: // Gap Jump (Standard or Crumbling)
+                            chunkWidth = 250;
+                            currentX += 100; // Gap
+
+                            // 30% Chance for Crumbling Platform in later levels
+                            if (levelNum > 1 && Math.random() < 0.3) {
+                                crumblePlats.push(new CrumblingPlatform(currentX, currentY, 150, 40));
+                            } else {
+                                platforms.push(new Box(currentX, currentY, 150, 50));
+                            }
+
+                            if (levelNum > 2 && Math.random() < 0.3) enemies.push(new Mage(currentX + 50, currentY - 60));
                             break;
+
                         case 2: // Steps Up
                             chunkWidth = 400;
                             platforms.push(new Box(currentX, currentY - 50, 100, 20));
                             platforms.push(new Box(currentX + 150, currentY - 120, 100, 20));
                             platforms.push(new Box(currentX + 300, currentY - 190, 100, 20));
                             currentY -= 190; // Adjust 'ground'
-                            if (levelNum > 1) enemies.push(new Bat(currentX + 200, currentY - 150));
+                            if (levelNum > 1 && Math.random() < 0.4) enemies.push(new Bat(currentX + 200, currentY - 150));
+                            else if (Math.random() < 0.3) enemies.push(new ShieldGoblin(currentX + 150, currentY - 130));
                             break;
-                        case 3: // Spikes Pit
+
+                        case 3: // Spikes Pit (or Lava)
                             chunkWidth = 500;
                             platforms.push(new Box(currentX, currentY, 100, 50)); // Edge
+
+                            // If Lava Biome, we can't just put spikes, maybe a visual lava pool (just rect for now)
+                            // For now, Spikes are just spikes logic.
+                            // In Level.draw, we can draw them as lava if biome is Lava.
                             spikes.push(new Box(currentX + 100, currentY + 40, 300, 30)); // Pit hazard
+
                             platforms.push(new Box(currentX + 400, currentY, 100, 50)); // Landing
                             if (Math.random() > 0.7) enemies.push(new Bat(currentX + 250, currentY - 200));
+                            if (levelNum > 3 && Math.random() < 0.3) enemies.push(new Kamikaze(currentX + 420, currentY - 50));
                             break;
+
                         case 4: // Floating Islands
                             chunkWidth = 600;
                             platforms.push(new Box(currentX, currentY - 60, 120, 20));
@@ -764,8 +1436,28 @@
                             platforms.push(new Box(currentX + 450, currentY - 60, 120, 20));
                             enemies.push(new Ghoul(currentX + 220, currentY - 160));
                             if (levelNum > 2) enemies.push(new Bat(currentX + 300, currentY - 300));
+                            if (levelNum > 4 && Math.random() < 0.2) enemies.push(new Mage(currentX + 460, currentY - 100));
+                            break;
+
+                        case 5: // Moving Platform Gap
+                            chunkWidth = 400;
+                            platforms.push(new Box(currentX, currentY, 80, 50)); // Start
+
+                            let mPlat = new MovingPlatform(currentX + 100, currentY, 100, 20, 0, 100, 0.05); // Vertical move
+                            if (Math.random() > 0.5) mPlat = new MovingPlatform(currentX + 100, currentY, 100, 20, 150, 0, 0.03); // Horizontal
+
+                            movingPlats.push(mPlat);
+
+                            platforms.push(new Box(currentX + 320, currentY, 80, 50)); // End
                             break;
                     }
+
+                    // Elite Loop
+                    if (enemies.length > 0 && Math.random() < 0.05 + (levelNum * 0.02)) {
+                        let last = enemies[enemies.length - 1];
+                        if (last.makeElite) last.makeElite();
+                    }
+
                     currentX += chunkWidth;
                 }
 
@@ -773,7 +1465,10 @@
                 platforms.push(new Box(currentX + 50, currentY, 300, 50));
                 let portalPos = new Vector2(currentX + 200, currentY - 80);
 
-                return new Level(platforms, spikes, enemies, portalPos);
+                let level = new Level(platforms, spikes, enemies, portalPos, biome);
+                level.movingPlatforms = movingPlats;
+                level.crumblingPlatforms = crumblePlats;
+                return level;
             }
         }
 
@@ -788,8 +1483,70 @@
                 this.camera = new Vector2(0, 0);
                 this.shake = 0;
                 this.triggerRestart = false;
+
+                // Persistence
+                this.saveData = SaveManager.load();
+                this.skin = SKINS[this.saveData.currentSkin] || SKINS.DEFAULT;
+
+                this.freezeFrames = 0;
+                this.floatingTexts = [];
+                this.projectiles = [];
+
+                // Progression
+                this.xp = 0;
+                this.level = 1;
+                this.nextLevelXp = 500;
+                this.availableUpgrades = [];
+
                 this.resize();
                 window.addEventListener('resize', () => this.resize());
+            }
+
+            addXp(amount) {
+                this.xp += amount;
+                if (this.xp >= this.nextLevelXp) {
+                    this.xp -= this.nextLevelXp;
+                    this.level++;
+                    this.nextLevelXp = Math.floor(this.nextLevelXp * 1.5);
+                    this.triggerLevelUp();
+                }
+            }
+
+            triggerLevelUp() {
+                this.state = 'LEVEL_UP';
+                // Pick 3 random upgrades
+                this.availableUpgrades = [];
+                let pool = [...UPGRADES];
+                for (let i = 0; i < 3; i++) {
+                    if (pool.length === 0) break;
+                    let idx = Math.floor(Math.random() * pool.length);
+                    this.availableUpgrades.push(pool[idx]);
+                    pool.splice(idx, 1);
+                }
+                SoundManager.playTone(400, 'sine', 0.5, 0.2); // Level Up Sound
+            }
+
+            applyUpgrade(upgradeId) {
+                switch (upgradeId) {
+                    case 'VITALITY':
+                        this.player.maxHealth++;
+                        this.player.health = this.player.maxHealth;
+                        break;
+                    case 'STRENGTH':
+                        this.player.damageMult = (this.player.damageMult || 1) + 0.5;
+                        break;
+                    case 'AGILITY':
+                        // We need to modify base speed, maybe add a multiplier to Player class
+                        this.player.speedMult = (this.player.speedMult || 1) * 1.2;
+                        break;
+                    case 'REACH':
+                        this.player.reachMult = (this.player.reachMult || 1) + 0.3;
+                        break;
+                    case 'HASTE':
+                        this.player.cooldownMult = (this.player.cooldownMult || 1) * 0.8;
+                        break;
+                }
+                this.state = 'PLAYING';
             }
 
             resize() {
@@ -802,16 +1559,27 @@
             startLevel(idx) {
                 this.levelIndex = idx;
                 this.level = LevelGenerator.generate(idx);
+
+                // Apply Biome Colors/Friction
+                Object.assign(COLORS, this.level.biome);
+
                 this.enemies = this.level.enemies;
                 this.player = new Player(100, 300);
 
                 // Keep stats if continuing
                 if (this.state === 'PLAYING' && this.playerRef) {
                     this.player.health = this.playerRef.health;
+                    this.player.maxHealth = this.playerRef.maxHealth; // Persist Max HP
                     this.player.score = this.score;
+                    // Persist Upgrades
+                    this.player.damageMult = this.playerRef.damageMult || 1;
+                    this.player.speedMult = this.playerRef.speedMult || 1;
+                    this.player.reachMult = this.playerRef.reachMult || 1;
+                    this.player.cooldownMult = this.playerRef.cooldownMult || 1;
                 }
                 this.playerRef = this.player;
                 this.particles = [];
+                this.projectiles = [];
                 this.state = 'PLAYING';
             }
 
@@ -823,6 +1591,16 @@
 
             gameOver() {
                 this.state = 'GAMEOVER';
+
+                // Save Progress
+                if (this.score > this.saveData.highScore) this.saveData.highScore = this.score;
+                // Accumulate stats (assuming totalKills tracked, adding pseudo count for now if not tracked)
+                // For this demo, let's just assume we track kills in a 'kills' property
+                // this.saveData.totalKills += this.sessionKills; 
+
+                SaveManager.checkUnlocks(this.saveData);
+                SaveManager.save(this.saveData);
+
                 this.triggerRestart = false; // Wait for new tap
             }
 
@@ -836,12 +1614,29 @@
 
                 if (this.state !== 'PLAYING') return;
 
+                if (this.freezeFrames > 0) {
+                    this.freezeFrames--;
+                    return;
+                }
+
                 // updateTouchInputs(); // REMOVED: Using Virtual Buttons now
                 this.player.update();
+                if (this.floatingTexts) {
+                    this.floatingTexts.forEach(t => t.update());
+                    this.floatingTexts = this.floatingTexts.filter(t => t.life > 0);
+                }
+                this.projectiles.forEach(p => p.update());
+                this.projectiles = this.projectiles.filter(p => !p.markedForDeletion);
                 this.enemies.forEach(e => e.update());
                 this.enemies = this.enemies.filter(e => !e.markedForDeletion);
                 this.particles.forEach(p => p.update());
                 this.particles = this.particles.filter(p => !p.markedForDeletion && p.life > 0);
+
+                // Update Platforms
+                if (this.level) {
+                    this.level.movingPlatforms.forEach(p => p.update());
+                    this.level.crumblingPlatforms.forEach(p => p.update());
+                }
 
                 // Camera Logic (Adjusted for Zoom)
                 // We want to center the player in the ZOOMED coordinate space
@@ -871,13 +1666,23 @@
                 this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
 
                 if (this.state === 'START') {
-                    this.drawMenu("SHADOW OF THE DUNGEON", "ASCENSION", "TAP TO START");
+                    this.drawMenu("SHADOW OF THE DUNGEON", "High Score: " + this.saveData.highScore, "TAP TO START");
+
+                    // Skin Prompt
+                    this.ctx.fillStyle = '#888';
+                    this.ctx.font = '16px Segoe UI';
+                    this.ctx.fillText(`Skin: ${this.skin.name} [Press T]`, this.canvas.width / 2, this.canvas.height / 2 + 60);
+
                     this.drawVignette();
                     return;
                 }
                 if (this.state === 'GAMEOVER') {
                     this.drawMenu("GAME OVER", "Score: " + this.score, "TAP TO RESTART");
                     this.drawVignette();
+                    return;
+                }
+                if (this.state === 'LEVEL_UP') {
+                    this.drawLevelUpMenu();
                     return;
                 }
 
@@ -909,6 +1714,10 @@
                     }
                 }
 
+                // Draw Special Platforms
+                this.level.movingPlatforms.forEach(p => p.draw(this.ctx));
+                this.level.crumblingPlatforms.forEach(p => p.draw(this.ctx));
+
                 for (let s of this.level.spikes) {
                     this.ctx.fillStyle = COLORS.spike;
                     let cnt = Math.floor(s.w / 20);
@@ -935,12 +1744,90 @@
 
                 this.player.draw(this.ctx);
                 this.enemies.forEach(e => e.draw(this.ctx));
+                this.projectiles.forEach(p => p.draw(this.ctx));
                 this.particles.forEach(pt => pt.draw(this.ctx));
+                if (this.floatingTexts) this.floatingTexts.forEach(t => t.draw(this.ctx));
 
                 this.ctx.restore();
 
                 this.drawVignette();
                 this.drawHUD();
+            }
+
+            drawLevelUpMenu() {
+                // Dim background
+                this.ctx.fillStyle = 'rgba(0,0,0,0.8)';
+                this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+
+                this.ctx.fillStyle = '#fff';
+                this.ctx.font = 'bold 40px Segoe UI';
+                this.ctx.textAlign = 'center';
+                this.ctx.fillText("LEVEL UP!", this.canvas.width / 2, 100);
+                this.ctx.font = '20px Segoe UI';
+                this.ctx.fillText("Choose an Upgrade", this.canvas.width / 2, 140);
+
+                let cardW = 200;
+                let cardH = 250;
+                let gap = 20;
+                let totalW = (cardW * 3) + (gap * 2);
+                let startX = (this.canvas.width - totalW) / 2;
+                let startY = 200;
+
+                this.availableUpgrades.forEach((upg, i) => {
+                    let x = startX + i * (cardW + gap);
+                    let y = startY;
+
+                    this.ctx.fillStyle = '#222';
+                    this.ctx.strokeStyle = '#fff';
+                    this.ctx.lineWidth = 2;
+                    this.ctx.fillRect(x, y, cardW, cardH);
+                    this.ctx.strokeRect(x, y, cardW, cardH);
+
+                    this.ctx.fillStyle = '#ff0';
+                    this.ctx.font = 'bold 24px Segoe UI';
+                    this.ctx.fillText(upg.name, x + cardW / 2, y + 50);
+
+                    this.ctx.fillStyle = '#ccc';
+                    this.ctx.font = '16px Segoe UI';
+                    this.wrapText(this.ctx, upg.desc, x + cardW / 2, y + 100, cardW - 20, 20);
+                });
+            }
+
+            // Helper for text wrapping
+            wrapText(ctx, text, x, y, maxWidth, lineHeight) {
+                let words = text.split(' ');
+                let line = '';
+                for (let n = 0; n < words.length; n++) {
+                    let testLine = line + words[n] + ' ';
+                    let metrics = ctx.measureText(testLine);
+                    let testWidth = metrics.width;
+                    if (testWidth > maxWidth && n > 0) {
+                        ctx.fillText(line, x, y);
+                        line = words[n] + ' ';
+                        y += lineHeight;
+                    }
+                    else {
+                        line = testLine;
+                    }
+                }
+                ctx.fillText(line, x, y);
+            }
+
+            handleLevelUpClick(x, y) {
+                let cardW = 200;
+                let cardH = 250;
+                let gap = 20;
+                let totalW = (cardW * 3) + (gap * 2);
+                let startX = (this.canvas.width - totalW) / 2;
+                let startY = 200;
+
+                for (let i = 0; i < 3; i++) {
+                    let cardX = startX + i * (cardW + gap);
+                    if (x > cardX && x < cardX + cardW && y > startY && y < startY + cardH) {
+                        this.applyUpgrade(this.availableUpgrades[i].id);
+                        break;
+                    }
+                }
             }
 
             drawVignette() {
