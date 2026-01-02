@@ -378,6 +378,31 @@
                 if (this.rangeX > 0) this.pos.x = this.startPos.x + Math.sin(this.time) * this.rangeX;
                 if (this.rangeY > 0) this.pos.y = this.startPos.y + Math.sin(this.time) * this.rangeY;
 
+                // Collision with Static Platforms (Naive Bounce/Clamp)
+                // If we hit a platform, we should clamp position to be outside
+                if (game.level) {
+                    for (let p of game.level.platforms) {
+                        if (this.overlaps(p)) {
+                            // Simple fix: If moving X, clamp to side. If Y, clamp to top/bottom.
+                            // But since it's Sine based, checking overlap is tricky because next frame it might still want to be inside.
+                            // A better visual fix: Draw 'rails' or just accept they might clip slightly, 
+                            // OR check overlap and if true, set position to edge.
+                            // The user requested: "don't go inside static tiles... last it goes to it and comes back"
+                            // So effectively, the Static Tile acts as a boundary for the Sine wave.
+
+                            // Let's try clamping:
+                            if (this.rangeX > 0) {
+                                if (this.pos.x < p.pos.x + p.w && this.pos.x + this.w > p.pos.x) {
+                                    // Overlap X.
+                                    // Determine side
+                                    if (prevX + this.w <= p.pos.x) { this.pos.x = p.pos.x - this.w - 1; } // Hit Left
+                                    else if (prevX >= p.pos.x + p.w) { this.pos.x = p.pos.x + p.w + 1; } // Hit Right
+                                }
+                            }
+                        }
+                    }
+                }
+
                 this.delta.x = this.pos.x - prevX;
                 this.delta.y = this.pos.y - prevY;
             }
@@ -744,8 +769,11 @@
                 if (this.pos.y > 1000) this.takeDamage(999); // Fall death
 
                 // Enemy Collision
+                if (this.attackTimer > 0) return; // Attack Immunity (Secondary Requirement)
+
                 for (let enemy of game.enemies) {
-                    if (this.overlaps(enemy) && this.invulnerable <= 0 && !enemy.dead) {
+                    // Contact Damage Rule: Only if NOT Stunned and NOT Dead
+                    if (this.overlaps(enemy) && this.invulnerable <= 0 && !enemy.dead && enemy.state !== ENEMY_STATE.STUNNED) {
                         this.takeDamage(1);
                         this.vel.x = (this.pos.x < enemy.pos.x) ? -12 : 12;
                         this.vel.y = -6;
@@ -945,6 +973,15 @@
                 // Base behavior, can be overridden
                 this.hp -= damage;
                 SoundManager.playEnemyHit();
+
+                // Stun Logic
+                this.stunned = 15; // 15 frames stun
+                this.changeState(ENEMY_STATE.STUNNED);
+
+                // Knockback
+                this.vel.x = fromRight ? -5 : 5;
+                this.vel.y = -3;
+
                 if (this.hp <= 0) {
                     this.die();
                     return true;
@@ -952,20 +989,26 @@
                 return false;
             }
             die() {
-                if (this.dead) return;
-                this.dead = true;
-                this.markedForDeletion = true;
-                for (let i = 0; i < 15; i++) {
-                    game.particles.push(new Particle(this.pos.x + this.w / 2, this.pos.y + this.h / 2, this.color, 4, 6, 30));
-                    game.particles.push(new Particle(this.pos.x + this.w / 2, this.pos.y + this.h / 2, '#fff', 6, 3, 10)); // Spark
+                game.particles.push(new Particle(this.pos.x + this.w / 2, this.pos.y + this.h / 2, '#fff', 6, 3, 10)); // Spark
+            }
+        }
+        update() {
+            super.update();
+            this.stateTimer++;
+            // Generic check for fall
+            if (this.pos.y > 1000) this.markedForDeletion = true;
+
+            if (this.state === ENEMY_STATE.STUNNED) {
+                this.pos.x += this.vel.x; // Apply knockback velocity
+                this.vel.x *= 0.8; // Friction
+                if (this.stateTimer > 15) {
+                    this.changeState(ENEMY_STATE.IDLE);
                 }
+                return;
             }
-            update() {
-                super.update();
-                this.stateTimer++;
-                // Generic check for fall
-                if (this.pos.y > 1000) this.markedForDeletion = true;
-            }
+        }
+
+        hasGroundAhead() {
 
             hasGroundAhead() {
                 let dir = this.facingRight ? 1 : -1;
