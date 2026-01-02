@@ -1111,6 +1111,11 @@
                 } else {
                     this.vel.x = 0;
                 }
+
+                // Ledge Detection (Stop at edge)
+                if (this.grounded && !this.hasGroundAhead()) {
+                    this.vel.x = 0;
+                }
             }
             draw(ctx) {
                 if (this.dead) return;
@@ -1231,8 +1236,13 @@
 
                 if (this.state === ENEMY_STATE.CHASE) {
                     this.vel.x = Math.sign(dist) * this.speed;
-                    // Jump small obstacles
-                    if (this.vel.x !== 0 && this.grounded && Math.random() < 0.05) this.vel.y = -8;
+                    // Jump small obstacles OR at ledge
+                    let atLedge = this.grounded && !this.hasGroundAhead();
+                    if ((this.vel.x !== 0 && this.grounded && Math.random() < 0.05) || atLedge) {
+                        this.vel.y = -8;
+                        // If at ledge and jumping doesn't help (still no ground), maybe reverse? 
+                        // But for Kamikaze, jumping blindly is fine.
+                    }
 
                     if (absDist < 40) {
                         this.changeState(ENEMY_STATE.ATTACK);
