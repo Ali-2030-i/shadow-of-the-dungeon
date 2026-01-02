@@ -382,19 +382,13 @@
                 // If we hit a platform, we should clamp position to be outside
                 if (game.level) {
                     for (let p of game.level.platforms) {
-                        if (this.overlaps(p)) {
-                            // Simple fix: If moving X, clamp to side. If Y, clamp to top/bottom.
-                            // But since it's Sine based, checking overlap is tricky because next frame it might still want to be inside.
-                            // A better visual fix: Draw 'rails' or just accept they might clip slightly, 
-                            // OR check overlap and if true, set position to edge.
-                            // The user requested: "don't go inside static tiles... last it goes to it and comes back"
-                            // So effectively, the Static Tile acts as a boundary for the Sine wave.
+                        // Optimization: Skip if far away X
+                        if (this.pos.x + this.w + 100 < p.pos.x || this.pos.x - 100 > p.pos.x + p.w) continue;
 
-                            // Let's try clamping:
+                        if (this.overlaps(p)) {
+                            // Simple fix: If moving X, clamp to side.
                             if (this.rangeX > 0) {
                                 if (this.pos.x < p.pos.x + p.w && this.pos.x + this.w > p.pos.x) {
-                                    // Overlap X.
-                                    // Determine side
                                     if (prevX + this.w <= p.pos.x) { this.pos.x = p.pos.x - this.w - 1; } // Hit Left
                                     else if (prevX >= p.pos.x + p.w) { this.pos.x = p.pos.x + p.w + 1; } // Hit Right
                                 }
@@ -989,34 +983,44 @@
                 return false;
             }
             die() {
-                game.particles.push(new Particle(this.pos.x + this.w / 2, this.pos.y + this.h / 2, '#fff', 6, 3, 10)); // Spark
-            }
-        }
-        update() {
-            super.update();
-            this.stateTimer++;
-            // Generic check for fall
-            if (this.pos.y > 1000) this.markedForDeletion = true;
-
-            if (this.state === ENEMY_STATE.STUNNED) {
-                this.pos.x += this.vel.x; // Apply knockback velocity
-                this.vel.x *= 0.8; // Friction
-                if (this.stateTimer > 15) {
-                    this.changeState(ENEMY_STATE.IDLE);
+                if (this.dead) return;
+                this.dead = true;
+                this.markedForDeletion = true;
+                for (let i = 0; i < 15; i++) {
+                    game.particles.push(new Particle(this.pos.x + this.w / 2, this.pos.y + this.h / 2, this.color, 4, 6, 30));
+                    game.particles.push(new Particle(this.pos.x + this.w / 2, this.pos.y + this.h / 2, '#fff', 6, 3, 10)); // Spark
                 }
-                return;
             }
-        }
+            update() {
+                super.update();
+                this.stateTimer++;
+                // Generic check for fall
+                if (this.pos.y > 1000) this.markedForDeletion = true;
 
-        hasGroundAhead() {
+                if (this.state === ENEMY_STATE.STUNNED) {
+                    this.pos.x += this.vel.x; // Apply knockback velocity
+                    this.vel.x *= 0.8; // Friction
+                    if (this.stateTimer > 15) {
+                        this.changeState(ENEMY_STATE.IDLE);
+                    }
+                    return;
+                }
+            }
 
             hasGroundAhead() {
-                let dir = this.facingRight ? 1 : -1;
-                let checkX = this.pos.x + this.w / 2 + (dir * (this.w / 2 + 10)); // Check slightly ahead of center
-                let checkY = this.pos.y + this.h + 5;
+                // Rely on velocity first, fallback to facingRight
+                let dir = 0;
+                if (Math.abs(this.vel.x) > 0.1) dir = Math.sign(this.vel.x);
+                else dir = this.facingRight ? 1 : -1;
+
+                let checkX = this.pos.x + this.w / 2 + (dir * (this.w / 2 + 20)); // Check slightly ahead of center (was 10, increased to 20)
+                let checkY = this.pos.y + this.h + 10; // Slightly deeper check
 
                 // Check static platforms
                 for (let p of game.level.platforms) {
+                    // Optimization: Skip if far away X (150px range check is plenty)
+                    if (checkX + 150 < p.pos.x || checkX - 150 > p.pos.x + p.w) continue;
+
                     if (checkX > p.pos.x && checkX < p.pos.x + p.w &&
                         checkY > p.pos.y && checkY < p.pos.y + p.h + 10) {
                         return true;
@@ -1030,7 +1034,6 @@
                         return true;
                     }
                 }
-
                 return false;
             }
         }
@@ -1052,6 +1055,8 @@
                 // Simple AI logic
                 if (this.state === ENEMY_STATE.IDLE) {
                     this.vel.x = this.dir * this.speed;
+                    this.facingRight = this.dir > 0; // Ensure facing matches movement
+
                     if (Math.abs(dist) < this.alertRange && heightDiff < 100) {
                         this.changeState(ENEMY_STATE.CHASE);
                     }
