@@ -581,14 +581,23 @@
                 this.grounded = false;
                 this.markedForDeletion = false;
                 this.stunned = 0;
+                this.currentPlatform = null;
             }
             update() {
                 if (this.stunned > 0) { this.stunned--; return; } // Stun logic
                 this.vel.y += GRAVITY;
                 this.pos.x += this.vel.x;
+
+                // Platform Movement
+                if (this.currentPlatform) {
+                    this.pos.x += this.currentPlatform.delta.x;
+                    this.pos.y += this.currentPlatform.delta.y;
+                }
+
                 this.checkCollisions(true);
                 this.pos.y += this.vel.y;
                 this.grounded = false;
+                this.currentPlatform = null; // Reset, re-detected in checkCollisions
                 this.checkCollisions(false);
             }
             checkCollisions(horizontal) {
@@ -630,8 +639,8 @@
                                 if (this.vel.y > 0 && this.pos.y + this.h < mp.pos.y + mp.h) { // Landing on top
                                     this.pos.y = mp.pos.y - this.h;
                                     this.grounded = true;
-                                    this.pos.x += mp.delta.x; // Carry player
-                                    this.pos.y += mp.delta.y;
+                                    this.currentPlatform = mp; // Latch onto platform
+                                    this.vel.y = 0;
                                 } else if (this.vel.y < 0) {
                                     this.pos.y = mp.pos.y + mp.h;
                                     this.vel.y = 0;
@@ -642,7 +651,8 @@
 
                     for (let cp of game.level.crumblingPlatforms) {
                         if (!cp.fallen && this.overlaps(cp)) {
-                            if (!horizontal && this.vel.y > 0 && this.pos.y + this.h < cp.pos.y + cp.h) {
+                            // Fixed Trigger Logic: Check position, not just velocity
+                            if (!horizontal && this.pos.y + this.h <= cp.pos.y + 10) {
                                 this.pos.y = cp.pos.y - this.h;
                                 this.grounded = true;
                                 this.vel.y = 0;
@@ -956,6 +966,30 @@
                 // Generic check for fall
                 if (this.pos.y > 1000) this.markedForDeletion = true;
             }
+
+            hasGroundAhead() {
+                let dir = this.facingRight ? 1 : -1;
+                let checkX = this.pos.x + this.w / 2 + (dir * (this.w / 2 + 10)); // Check slightly ahead of center
+                let checkY = this.pos.y + this.h + 5;
+
+                // Check static platforms
+                for (let p of game.level.platforms) {
+                    if (checkX > p.pos.x && checkX < p.pos.x + p.w &&
+                        checkY > p.pos.y && checkY < p.pos.y + p.h + 10) {
+                        return true;
+                    }
+                }
+
+                // Check Moving Platforms
+                for (let mp of game.level.movingPlatforms) {
+                    if (checkX > mp.pos.x && checkX < mp.pos.x + mp.w &&
+                        checkY > mp.pos.y && checkY < mp.pos.y + mp.h + 10) {
+                        return true;
+                    }
+                }
+
+                return false;
+            }
         }
 
         class Ghoul extends Enemy {
@@ -980,14 +1014,8 @@
                     }
                     // Patrol turn around
                     if (this.grounded) {
-                        let ahead = this.pos.x + (this.vel.x > 0 ? this.w + 10 : -10);
-                        let safe = false;
-                        for (let p of game.level.platforms) {
-                            if (ahead > p.pos.x && ahead < p.pos.x + p.w && this.pos.y + this.h + 2 > p.pos.y) {
-                                safe = true; break;
-                            }
-                        }
-                        if (!safe) {
+                        // Use hasGroundAhead instead of manual check
+                        if (!this.hasGroundAhead()) {
                             this.dir *= -1;
                             this.vel.x *= -1;
                         }
@@ -995,6 +1023,13 @@
                 } else if (this.state === ENEMY_STATE.CHASE) {
                     this.facingRight = dist > 0;
                     this.vel.x = Math.sign(dist) * (this.speed * 1.8);
+
+                    // Ledge Detection in Chase
+                    if (this.grounded && !this.hasGroundAhead()) {
+                        this.vel.x = 0;
+                        // Wait at edge briefly? Or just stop chase?
+                        // Let's just stop moving for this frame to avoid fall
+                    }
 
                     if (Math.abs(dist) > this.alertRange * 1.5) this.changeState(ENEMY_STATE.IDLE);
                 }
