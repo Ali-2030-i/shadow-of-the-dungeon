@@ -275,14 +275,22 @@
             }
             if (e.code === 'ArrowUp') keyPresses['Space'] = true;
             if (e.code === 'Space') keyPresses['ArrowUp'] = true;
-            if (e.code === 'KeyT' && game && game.state === 'START') {
-                // Cycle Skins
-                let unlocked = game.saveData.unlockedSkins;
-                let idx = unlocked.indexOf(game.saveData.currentSkin);
-                idx = (idx + 1) % unlocked.length;
-                game.saveData.currentSkin = unlocked[idx];
-                game.skin = SKINS[game.saveData.currentSkin];
-                SaveManager.save(game.saveData);
+            if (e.key === 't' || e.key === 'T') {
+                if (game.state === 'START') {
+                    // Cycle Skins
+                    let unlocked = game.saveData.unlockedSkins;
+                    let currentIdx = unlocked.indexOf(game.saveData.currentSkin);
+                    let nextIdx = (currentIdx + 1) % unlocked.length;
+                    let nextSkinName = unlocked[nextIdx];
+                    game.saveData.currentSkin = nextSkinName;
+                    game.skin = SKINS[nextSkinName];
+                    SaveManager.save(game.saveData);
+                }
+            }
+            if (e.key === 'Shift') {
+                if (game.state === 'PLAYING' && game.player) {
+                    game.player.triggerAbility();
+                }
             }
         });
         window.addEventListener('keyup', (e) => { if (keys.hasOwnProperty(e.code)) keys[e.code] = false; });
@@ -466,6 +474,513 @@
 
                 ctx.fillStyle = COLORS.platformTop;
                 ctx.fillRect(this.pos.x, this.pos.y, this.w, 3);
+            }
+        }
+
+        // --- Trap System ---
+        class Trap extends Box {
+            constructor(x, y, w, h) {
+                super(x, y, w, h);
+                this.active = false;
+                this.damage = 1;
+            }
+            update() { }
+            draw(ctx) { }
+            checkCollision(player) {
+                if (this.active && this.overlaps(player)) {
+                    player.takeDamage(this.damage);
+                    return true;
+                }
+                return false;
+            }
+        }
+
+        class BladeTrap extends Trap {
+            constructor(x, y) {
+                super(x, y, 40, 40);
+                this.timer = 0;
+                this.cycle = 120; // 60 idle, 30 windup, 30 active
+                this.bladeHeight = 0;
+            }
+            update() {
+                this.timer++;
+                if (this.timer >= this.cycle) this.timer = 0;
+
+                // 0-60: Idle
+                // 60-90: Windup (Shake)
+                // 90-120: Active (Blade Up)
+
+                if (this.timer > 60 && this.timer < 90) {
+                    // Windup
+                    this.active = false;
+                } else if (this.timer >= 90) {
+                    // Active
+                    this.active = true;
+                    this.bladeHeight = 30;
+                } else {
+                    this.active = false;
+                    this.bladeHeight = 0;
+                }
+            }
+            draw(ctx) {
+                ctx.fillStyle = '#444';
+                ctx.fillRect(this.pos.x, this.pos.y, this.w, this.h); // Base
+
+                // Blade
+                if (this.timer > 60) {
+                    let h = this.active ? 35 : (this.timer - 60); // Grow during windup
+                    ctx.fillStyle = this.active ? '#f00' : '#ccc';
+                    if (this.active) {
+                        ctx.shadowBlur = 10;
+                        ctx.shadowColor = '#f00';
+                    }
+
+                    // Shake
+                    let shake = (this.timer > 60 && this.timer < 90) ? (Math.random() * 4 - 2) : 0;
+
+                    ctx.beginPath();
+                    ctx.moveTo(this.pos.x + 10 + shake, this.pos.y);
+                    ctx.lineTo(this.pos.x + 20 + shake, this.pos.y - h);
+                    ctx.lineTo(this.pos.x + 30 + shake, this.pos.y);
+                    ctx.fill();
+                    ctx.shadowBlur = 0;
+                }
+            }
+            checkCollision(player) {
+                // Override to check blade rect, not base rect
+                if (this.active) {
+                    let bladeBox = new Box(this.pos.x + 5, this.pos.y - 35, 30, 35);
+                    if (bladeBox.overlaps(player)) {
+                        player.takeDamage(1);
+                        player.vel.y = -8; // Knock up
+                        return true;
+                    }
+                }
+                return false;
+            }
+        }
+
+        class PressurePlateTrap extends Trap {
+            constructor(x, y) {
+                super(x, y + 15, 30, 5); // Flat on ground
+                this.color = '#aa0';
+                this.triggered = false;
+                this.resetTimer = 0;
+            }
+            update() {
+                if (this.triggered) {
+                    this.resetTimer--;
+                    if (this.resetTimer <= 0) {
+                        this.triggered = false;
+                        this.active = false;
+                        this.y -= 5; // Pop up
+                    }
+                }
+            }
+            checkCollision(player) {
+                if (!this.triggered && this.overlaps(player) && player.grounded) {
+                    this.trigger();
+                }
+                // Doesn't deal damage directly, spawns hazard
+                return false;
+            }
+            trigger() {
+                this.triggered = true;
+                this.resetTimer = 100;
+                this.y += 5; // Press down
+                SoundManager.playTone(600, 'square', 0.05, 0.05);
+
+                // Spawn projectile above
+                game.projectiles.push(new Projectile(this.pos.x + 15, this.pos.y - 200, 0, 8, 'TRAP'));
+            }
+            draw(ctx) {
+                ctx.fillStyle = this.triggered ? '#550' : this.color;
+                ctx.fillRect(this.pos.x, this.pos.y, this.w, this.h);
+            }
+        }
+
+        class LaserTrap extends Trap {
+            constructor(x, y, range, vertical = false) {
+                super(x, y, vertical ? 10 : range, vertical ? range : 10);
+                this.range = range;
+                this.vertical = vertical;
+                this.timer = 0;
+            }
+            update() {
+                this.timer += 0.05;
+                this.active = true;
+            }
+            draw(ctx) {
+                ctx.save();
+                ctx.shadowBlur = 10;
+                ctx.shadowColor = '#f0f';
+                ctx.strokeStyle = '#f0f';
+                ctx.lineWidth = 4 + Math.sin(Date.now() / 100) * 2;
+
+                ctx.beginPath();
+                if (this.vertical) {
+                    ctx.moveTo(this.pos.x + 5, this.pos.y);
+                    ctx.lineTo(this.pos.x + 5, this.pos.y + this.h);
+                } else {
+                    ctx.moveTo(this.pos.x, this.pos.y + 5);
+                    ctx.lineTo(this.pos.x + this.w, this.pos.y + 5);
+                }
+                ctx.stroke();
+                ctx.restore();
+
+                // Emitters
+                ctx.fillStyle = '#333';
+                if (this.vertical) {
+                    ctx.fillRect(this.pos.x, this.pos.y - 10, 10, 10);
+                    ctx.fillRect(this.pos.x, this.pos.y + this.h, 10, 10);
+                } else {
+                    ctx.fillRect(this.pos.x - 10, this.pos.y, 10, 10);
+                    ctx.fillRect(this.pos.x + this.w, this.pos.y, 10, 10);
+                }
+            }
+        }
+
+        // --- Objective System ---
+        class Objective extends Box {
+            constructor(x, y, w, h) {
+                super(x, y, w, h);
+                this.active = false;
+                this.completed = false;
+                this.rewarded = false;
+                this.description = "Objective";
+            }
+            update() { }
+            draw(ctx) { }
+            complete() {
+                if (this.completed) return;
+                this.completed = true;
+                SoundManager.playTone(600, 'triangle', 0.5, 0.4); // Success sound
+                game.floatingTexts.push(new FloatingText(game.player.pos.x, game.player.pos.y - 50, "OBJECTIVE COMPLETE!", "#ffd700"));
+
+                // Spawn Reward
+                game.objects.push(new RewardChest(this.pos.x + this.w / 2 - 20, this.pos.y + this.h - 40));
+            }
+        }
+
+        class KillChallenge extends Objective {
+            constructor(x, y, w, h, targetCount) {
+                super(x, y, w, h);
+                this.targetCount = targetCount;
+                this.kills = 0;
+                this.description = "Defeat Enemies!";
+                this.triggered = false;
+                this.enemiesToSpawn = [];
+            }
+            update() {
+                if (this.completed) return;
+
+                // Check player entry
+                if (!this.triggered && this.overlaps(game.player)) {
+                    this.triggered = true;
+                    this.active = true;
+                    game.floatingTexts.push(new FloatingText(game.player.pos.x, game.player.pos.y - 50, "CHALLENGE START!", "#f00"));
+
+                    // Spawn Enemies
+                    this.enemiesToSpawn.forEach(e => game.enemies.push(e));
+                }
+
+                if (this.triggered) {
+                    // Track kills? 
+                    // Needs Game to track kills associated with this room? 
+                    // Simplified: Just check if the specific enemies spawned are dead.
+                    let allDead = true;
+                    for (let e of this.enemiesToSpawn) {
+                        if (!e.dead) {
+                            allDead = false;
+                            break;
+                        }
+                    }
+                    if (this.enemiesToSpawn.length > 0 && allDead) {
+                        this.complete();
+                    }
+                }
+            }
+            draw(ctx) {
+                if (this.completed) return;
+
+                // Draw Zone Border
+                ctx.strokeStyle = this.triggered ? '#f00' : '#ff0';
+                ctx.setLineDash([10, 10]);
+                ctx.strokeRect(this.pos.x, this.pos.y, this.w, this.h);
+                ctx.setLineDash([]);
+
+                // Draw Text
+                if (this.overlaps(game.player) || this.triggered) {
+                    ctx.fillStyle = '#fff';
+                    ctx.font = '16px Segoe UI';
+                    let remaining = 0;
+                    for (let e of this.enemiesToSpawn) if (!e.dead) remaining++;
+                    ctx.fillText(`${this.description} (${remaining})`, this.pos.x + 20, this.pos.y + 30);
+                }
+            }
+        }
+
+        // --- Arena System ---
+        class ArenaGate extends Box {
+            constructor(x, y, h) {
+                super(x, y, 20, h);
+                this.locked = false;
+                this.activeHeight = h;
+                this.timer = 0;
+            }
+            lock() {
+                this.locked = true;
+                // Add to game platforms if not already? 
+                // Using a persistent reference approach or management by Controller is safer
+            }
+            unlock() {
+                this.locked = false;
+            }
+            draw(ctx) {
+                if (!this.locked && this.timer <= 0) return; // Invisible when open
+
+                ctx.fillStyle = '#555';
+                // Animate closing/opening?
+                let h = this.locked ? this.activeHeight : 0;
+                ctx.fillRect(this.pos.x, this.pos.y, this.w, h);
+
+                // Bars
+                if (this.locked) {
+                    ctx.strokeStyle = '#000';
+                    ctx.beginPath();
+                    ctx.moveTo(this.pos.x + 10, this.pos.y);
+                    ctx.lineTo(this.pos.x + 10, this.pos.y + h);
+                    ctx.stroke();
+                }
+            }
+        }
+
+        class ArenaController extends Objective {
+            constructor(x, y, w, h) {
+                super(x, y, w, h);
+                this.description = "Survive the Arena!";
+                this.waves = []; // Array of Arrays of Enemy Classes
+                this.currentWaveIdx = 0;
+                this.waveEnemies = [];
+                this.gates = []; // [Gate, Gate]
+                this.state = 'IDLE'; // IDLE, ACTIVE, DELAY, CLEARED
+                this.delayTimer = 0;
+            }
+            addWave(enemies) {
+                this.waves.push(enemies);
+            }
+            update() {
+                if (this.state === 'CLEARED') return;
+
+                if (this.state === 'IDLE') {
+                    if (this.overlaps(game.player)) {
+                        this.startArena();
+                    }
+                } else if (this.state === 'ACTIVE') {
+                    // Check Wave Clear
+                    let allDead = true;
+                    for (let e of this.waveEnemies) {
+                        if (!e.dead) { allDead = false; break; }
+                    }
+
+                    if (allDead) {
+                        this.currentWaveIdx++;
+                        if (this.currentWaveIdx >= this.waves.length) {
+                            this.clearArena();
+                        } else {
+                            this.state = 'DELAY';
+                            this.delayTimer = 60; // 1s delay
+                            game.floatingTexts.push(new FloatingText(game.player.pos.x, game.player.pos.y - 80, "WAVE CLEARED!", "#0f0"));
+                        }
+                    }
+                } else if (this.state === 'DELAY') {
+                    this.delayTimer--;
+                    if (this.delayTimer <= 0) {
+                        this.spawnWave();
+                    }
+                }
+            }
+            startArena() {
+                this.state = 'ACTIVE';
+                this.gates.forEach(g => {
+                    g.lock();
+                    game.level.platforms.push(g); // Become Solid
+                });
+                SoundManager.playTone(100, 'sawtooth', 0.5, 0.5); // Slam
+                game.floatingTexts.push(new FloatingText(game.player.pos.x, game.player.pos.y - 50, "ARENA LOCKED!", "#f00"));
+                this.spawnWave();
+            }
+            spawnWave() {
+                this.state = 'ACTIVE';
+                let wave = this.waves[this.currentWaveIdx];
+                this.waveEnemies = [];
+
+                wave.forEach((EnemyClass, i) => {
+                    // Spawn uniformly across arena width
+                    let ex = this.pos.x + 50 + Math.random() * (this.w - 100);
+                    let ey = this.pos.y + this.h - 50; // Floor level roughly
+                    let e = new EnemyClass(ex, ey);
+                    game.enemies.push(e);
+                    this.waveEnemies.push(e);
+                    // Spawn Effect
+                    game.particles.push(new Particle(ex, ey, '#f0f', 3, 3, 30));
+                });
+                game.floatingTexts.push(new FloatingText(game.player.pos.x, game.player.pos.y - 100, `WAVE ${this.currentWaveIdx + 1}!`, "#fff"));
+            }
+            clearArena() {
+                this.state = 'CLEARED';
+                this.completed = true;
+                this.gates.forEach(g => {
+                    g.unlock();
+                    // Remove from physics
+                    let idx = game.level.platforms.indexOf(g);
+                    if (idx > -1) game.level.platforms.splice(idx, 1);
+                });
+                SoundManager.playTone(600, 'triangle', 0.5, 0.5);
+                game.floatingTexts.push(new FloatingText(game.player.pos.x, game.player.pos.y - 50, "ARENA CLEARED!", "#ffd700"));
+
+                // Reward
+                game.objects.push(new RewardChest(this.pos.x + this.w / 2, this.pos.y + this.h - 40));
+            }
+            draw(ctx) {
+                // Draw Gates
+                this.gates.forEach(g => g.draw(ctx));
+
+                if (this.state !== 'IDLE' && this.state !== 'CLEARED') {
+                    ctx.fillStyle = 'rgba(255, 0, 0, 0.1)';
+                    ctx.fillRect(this.pos.x, this.pos.y, this.w, this.h);
+
+                    ctx.fillStyle = '#fff';
+                    ctx.font = '20px Segoe UI';
+                    ctx.fillText(`ARENA: WAVE ${this.currentWaveIdx + 1}/${this.waves.length}`, this.pos.x + this.w / 2 - 60, this.pos.y + 40);
+                }
+            }
+        }
+
+        class RewardChest extends Box {
+            constructor(x, y) {
+                super(x, y, 40, 30);
+                this.opened = false;
+                this.color = '#d4af37'; // Gold
+            }
+            update() {
+                if (!this.opened && this.overlaps(game.player)) {
+                    this.open();
+                }
+            }
+            open() {
+                this.opened = true;
+                SoundManager.playTone(800, 'sine', 0.5, 0.5); // Open sound
+                game.addXp(200);
+                game.floatingTexts.push(new FloatingText(this.pos.x, this.pos.y - 20, "+200 XP", "#0f0"));
+
+                // Maybe a heal?
+                if (!game.modifiers.noHealing && game.player.health < game.player.maxHealth) {
+                    game.player.health++;
+                    game.floatingTexts.push(new FloatingText(this.pos.x + 20, this.pos.y - 40, "+1 HP", "#f00"));
+                }
+            }
+            draw(ctx) {
+                if (this.opened) {
+                    ctx.fillStyle = '#654'; // Darker wood
+                    ctx.fillRect(this.pos.x, this.pos.y + 15, 40, 15); // Open bottom
+                    ctx.fillStyle = '#000';
+                    ctx.fillRect(this.pos.x + 2, this.pos.y + 2, 36, 13); // Local void
+                } else {
+                    ctx.fillStyle = this.color;
+                    ctx.fillRect(this.pos.x, this.pos.y, 40, 30);
+                    ctx.fillStyle = '#fff';
+                    ctx.fillRect(this.pos.x + 18, this.pos.y + 10, 4, 10); // Lock
+                }
+            }
+        }
+
+        // --- Ability System ---
+        class Ability {
+            constructor(name, cooldown, icon) {
+                this.name = name;
+                this.maxCooldown = cooldown;
+                this.cooldownTimer = 0;
+                this.activeDuration = 0;
+                this.timer = 0;
+                this.icon = icon || '?';
+            }
+            canTrigger() {
+                return this.cooldownTimer <= 0;
+            }
+            trigger(player) {
+                // Override
+                this.cooldownTimer = this.maxCooldown;
+            }
+            update(player) {
+                if (this.cooldownTimer > 0) this.cooldownTimer--;
+                if (this.timer > 0) {
+                    this.timer--;
+                    this.activeUpdate(player);
+                }
+            }
+            activeUpdate(player) { }
+            draw(ctx, player) { }
+        }
+
+        class DashAbility extends Ability {
+            constructor() {
+                super('Dash', 60, '>>'); // 1s cooldown
+                this.activeDuration = 12; // 0.2s
+            }
+            trigger(player) {
+                if (!this.canTrigger()) return;
+                super.trigger(player);
+                this.timer = this.activeDuration;
+
+                // Dash Logic
+                let dir = player.facingRight ? 1 : -1;
+                // If moving, use input dir
+                if (Math.abs(player.vel.x) > 0.1) dir = Math.sign(player.vel.x);
+
+                player.vel.x = dir * 15;
+                player.vel.y = 0;
+                player.isDashing = true;
+                SoundManager.playTone(600, 'sawtooth', 0.1, 0.1);
+
+                // Trail effect
+                for (let i = 0; i < 5; i++) {
+                    game.particles.push(new Particle(player.pos.x, player.pos.y, '#fff', 5, 2, 20));
+                }
+            }
+            activeUpdate(player) {
+                player.vel.y = 0; // Anti-gravity
+                if (this.timer === 1) {
+                    player.isDashing = false;
+                    player.vel.x *= 0.2; // Stop
+                }
+                // Spawn particles
+                if (this.timer % 3 === 0) {
+                    game.particles.push(new Particle(player.pos.x, player.pos.y, '#0ff', 4, 0, 10));
+                }
+            }
+        }
+
+        class ParryAbility extends Ability {
+            constructor() {
+                super('Parry', 120, 'P'); // 2s cooldown
+                this.activeDuration = 15; // 0.25s window
+            }
+            trigger(player) {
+                if (!this.canTrigger()) return;
+                super.trigger(player);
+                this.timer = this.activeDuration;
+                player.isParrying = true;
+                player.vel.x = 0; // Root
+                SoundManager.playTone(800, 'square', 0.1, 0.05); // Ping
+
+                game.floatingTexts.push(new FloatingText(player.pos.x, player.pos.y - 40, "!", "#fff"));
+            }
+            activeUpdate(player) {
+                player.vel.x = 0;
+                if (this.timer === 1) {
+                    player.isParrying = false;
+                }
             }
         }
 
@@ -807,11 +1322,6 @@
                         }
 
                         if (successfulHit) {
-                            game.score += 100 * (game.levelIndex + 1);
-                            game.addXp(50); // XP Gain
-                            hit = true;
-                            game.freezeFrames = 6; // Kill freeze
-                            game.floatingTexts.push(new FloatingText(enemy.pos.x + enemy.w / 2, enemy.pos.y, "+100", "#ffd700"));
                             SoundManager.playKill();
                         } else {
                             // Blocked logic handled inside takeHit
@@ -894,6 +1404,216 @@
                 }
 
                 ctx.restore();
+            }
+        }
+
+        class Player extends Entity {
+            constructor(x, y) {
+                super(x, y, 40, 60);
+                this.color = '#fff'; // Placeholder
+                this.speed = 5;
+                this.jumpForce = -15;
+                this.attackCooldown = 0;
+                this.health = 3;
+                this.maxHealth = 3;
+                this.invulnerable = 0;
+
+                // Ability System
+                this.activeAbility = null; // Equipped ability
+                this.isDashing = false;
+                this.isParrying = false;
+
+                this.facingRight = true;
+                this.attackBox = null;
+                this.attackTimer = 0; // For visual feedback
+
+                // Stats
+                this.damageMult = 1;
+                this.speedMult = 1;
+                this.reachMult = 1;
+                this.cooldownMult = 1;
+            }
+            equipAbility(ability) {
+                this.activeAbility = ability;
+                game.floatingTexts.push(new FloatingText(this.pos.x, this.pos.y - 40, "ABILITY EQUIPPED!", "#0ff"));
+            }
+            triggerAbility() {
+                if (this.activeAbility && this.activeAbility.canTrigger()) {
+                    this.activeAbility.trigger(this);
+                }
+            }
+            update() {
+                // Ability Updates
+                if (this.activeAbility) this.activeAbility.update(this);
+
+                // If Dashing, physics are overridden by ability
+                if (this.isDashing) {
+                    this.pos.x += this.vel.x;
+                    // No gravity, no collision check for walls? Maybe walls stop dash?
+                    // For now, let's allow ghosting through enemies but walls stop
+                    this.checkCollisions(true); // Wall stop
+                    return;
+                }
+
+                // If Parrying, rooted
+                if (this.isParrying) return;
+
+                if (this.attackCooldown > 0) this.attackCooldown--;
+                if (this.invulnerable > 0) this.invulnerable--;
+                if (this.attackTimer > 0) this.attackTimer--;
+
+                // Movement Input
+                let move = 0;
+                if (keys['ArrowRight'] || keys['d']) move = 1;
+                if (keys['ArrowLeft'] || keys['a']) move = -1;
+
+                this.vel.x = move * this.speed * this.speedMult;
+                if (move !== 0) this.facingRight = move > 0;
+
+                // Jump
+                if ((keys['ArrowUp'] || keys['w'] || keys[' ']) && this.grounded) {
+                    this.vel.y = this.jumpForce;
+                    this.grounded = false;
+                    SoundManager.playJump();
+                    // Dust particles
+                    for (let i = 0; i < 5; i++) game.particles.push(new Particle(this.pos.x + 20, this.pos.y + 60, '#888', 2, 4, 20));
+                }
+
+                super.update();
+
+                // Check Pit Death
+                if (this.pos.y > 1000) {
+                    this.takeDamage(999);
+                }
+            }
+            draw(ctx) {
+                ctx.save();
+                ctx.translate(this.pos.x + this.w / 2, this.pos.y + this.h / 2);
+                if (!this.facingRight) ctx.scale(-1, 1);
+
+                // Visual override for Ability actions
+                if (this.isDashing) {
+                    ctx.globalAlpha = 0.5;
+                    ctx.scale(1.2, 0.8); // Stretch
+                }
+
+                // Draw Skin
+                let skin = game.skin;
+
+                // Body
+                ctx.fillStyle = (this.invulnerable > 0 && Math.floor(Date.now() / 50) % 2 === 0) ? '#f00' : skin.data.body;
+                // Parry Color Override
+                if (this.isParrying) ctx.fillStyle = '#fff';
+
+                ctx.fillRect(-20, -30, 40, 60);
+
+                // Parry Shield Visual
+                if (this.isParrying) {
+                    ctx.strokeStyle = '#0ff';
+                    ctx.lineWidth = 3;
+                    ctx.beginPath(); ctx.arc(15, 0, 30, -Math.PI / 4, Math.PI / 4); ctx.stroke();
+                }
+
+                // ... (Rest of drawing is mostly same, just ensuring context restored)
+
+                // Head
+                ctx.fillStyle = skin.data.head;
+                ctx.fillRect(-15, -50, 30, 20); // Head above body
+
+                // Eyes
+                ctx.fillStyle = '#000';
+                ctx.fillRect(5, -45, 5, 5); // Eye
+
+                // Weapon
+                if (this.attackTimer > 0) {
+                    // ... stored in simple update
+                } else {
+                    // Sword at side
+                    ctx.fillStyle = skin.data.weapon;
+                    ctx.fillRect(10, -10, 5, 30);
+                }
+
+                // Legs
+                if (Math.abs(this.vel.x) > 0.1 && this.grounded) {
+                    let legFactor = Math.sin(Date.now() / 50) * 10;
+                    ctx.strokeStyle = '#111';
+                    ctx.beginPath(); ctx.moveTo(-5, 20); ctx.lineTo(-8 - legFactor, 40); ctx.stroke(); // Back leg
+                    ctx.beginPath(); ctx.moveTo(5, 20); ctx.lineTo(8 + legFactor, 40); ctx.stroke(); // Front leg
+                } else if (!this.grounded) {
+                    ctx.strokeStyle = '#111';
+                    ctx.beginPath(); ctx.moveTo(-5, 20); ctx.lineTo(-10, 35); ctx.stroke();
+                    ctx.beginPath(); ctx.moveTo(5, 20); ctx.lineTo(10, 30); ctx.stroke();
+                }
+
+                // Sword Slash
+                if (this.attackTimer > 0) {
+                    let p = 1 - (this.attackTimer / 10); // Hardcoded duration from attack method
+                    ctx.strokeStyle = COLORS.slash;
+                    ctx.lineWidth = 4 - (p * 3);
+                    ctx.beginPath();
+                    ctx.arc(10, -10, 50 + (game.player.reachMult > 1 ? 20 : 0), -Math.PI / 2 + (p * Math.PI), -Math.PI / 2 + (p * Math.PI) + Math.PI / 3);
+                    ctx.stroke();
+                }
+
+                ctx.restore();
+            }
+            takeDamage(amount) {
+                if (this.invulnerable > 0 || this.isDashing) return;
+
+                if (this.isParrying) {
+                    // Parry Success!
+                    SoundManager.playTone(1200, 'sine', 0.2, 0.2); // Ding!
+                    game.floatingTexts.push(new FloatingText(this.pos.x, this.pos.y - 40, "PARRY!", "#0ff"));
+                    this.invulnerable = 30; // Brief invu
+
+                    // Stun all enemies on screen? Or just source?
+                    // Simplified: Stun all visible enemies
+                    game.enemies.forEach(e => {
+                        if (Math.abs(e.pos.x - this.pos.x) < 400 && Math.abs(e.pos.y - this.pos.y) < 200) {
+                            e.takeHit(0, this.pos.x < e.pos.x); // Trigger stun with 0 dmg
+                        }
+                    });
+                    return;
+                }
+
+                this.health -= amount;
+                this.invulnerable = 60;
+                SoundManager.playHit();
+                game.shakeScreen(10);
+
+                if (this.health <= 0) {
+                    game.gameOver();
+                }
+            }
+            attack() {
+                if (this.attackCooldown > 0 || this.isParrying || this.isDashing) return;
+
+                this.attackCooldown = Math.floor(25 * this.cooldownMult); // Base 25 frames
+                this.attackTimer = 10;
+                SoundManager.playTone(200 + Math.random() * 50, 'square', 0.1, 0.05); // Slash sound
+
+                // Hitbox
+                let range = 60 * this.reachMult;
+                let damage = 1 * this.damageMult;
+
+                // Center of attack box based on facing
+                let cx = this.pos.x + this.w / 2 + (this.facingRight ? 30 : -30);
+                let cy = this.pos.y + this.h / 2;
+
+                this.attackBox = new Box(cx - range / 2, cy - 30, range, 60);
+
+                // Debug draw handled implicitly? logic only below
+
+                // Check Enemies
+                if (game.enemies) {
+                    game.enemies.forEach(e => {
+                        if (this.attackBox.overlaps(e)) {
+                            e.takeHit(damage, this.facingRight);
+                            // Mana/Rage gain? 
+                            game.xp += 10; // Combat XP
+                        }
+                    });
+                }
             }
         }
 
@@ -1041,7 +1761,7 @@
         class Ghoul extends Enemy {
             constructor(x, y) {
                 super(x, y, 40, 40, COLORS.ghoulBody);
-                this.hp = 2 + Math.floor(game.levelIndex / 3);
+                this.hp = 3 + Math.floor(game.levelIndex * 0.2); // Base 3 (2 hits)
                 this.speed = 1.5 + (game.levelIndex * 0.1);
                 this.dir = 1;
             }
@@ -1124,7 +1844,7 @@
         class ShieldGoblin extends Enemy {
             constructor(x, y) {
                 super(x, y, 45, 45, '#464');
-                this.hp = 3 + Math.floor(game.levelIndex / 2);
+                this.hp = 4 + Math.floor(game.levelIndex * 0.4); // Base 4 (Tanky)
                 this.speed = 0.8;
                 this.shieldUp = true;
             }
@@ -1194,7 +1914,7 @@
         class Mage extends Enemy {
             constructor(x, y) {
                 super(x, y, 35, 55, COLORS.mageBody);
-                this.hp = 2 + Math.floor(game.levelIndex / 3);
+                this.hp = 3 + Math.floor(game.levelIndex * 0.3); // Base 3 (Standard)
                 this.speed = 1.2;
                 this.cooldown = 100;
             }
@@ -1268,7 +1988,7 @@
         class Kamikaze extends Enemy {
             constructor(x, y) {
                 super(x, y, 30, 30, COLORS.kamikazeBody);
-                this.hp = 1;
+                this.hp = 2 + Math.floor(game.levelIndex * 0.2); // Base 2, scales very slowly
                 this.speed = 3.5;
                 this.exploded = false;
             }
@@ -1427,7 +2147,7 @@
         // --- Procedural Generation ---
 
         class Level {
-            constructor(platforms, spikes, enemies, portalPos, biome) {
+            constructor(platforms, spikes, enemies, portalPos, biome, traps, objectives) {
                 this.platforms = platforms;
                 this.spikes = spikes;
                 this.enemies = enemies; // Live array
@@ -1435,8 +2155,41 @@
                 this.biome = biome;
                 this.movingPlatforms = [];
                 this.crumblingPlatforms = [];
+                this.traps = traps || [];
+                this.objectives = objectives || [];
             }
         }
+
+        const DIFFICULTY_TIERS = {
+            TIER_1: { // Levels 0-1 (Tutorial)
+                allowedEnemies: ['GHOUL'],
+                trapChance: 0.0,
+                eliteChance: 0.0,
+                maxChunkComplexity: 1, // Only Flat or simple Gaps
+                recoveryChance: 1.0 // Guaranteed heal
+            },
+            TIER_2: { // Levels 2-3 (Intermediate)
+                allowedEnemies: ['GHOUL', 'BAT'],
+                trapChance: 0.15,
+                eliteChance: 0.05,
+                maxChunkComplexity: 3, // Steps, Spikes
+                recoveryChance: 0.8
+            },
+            TIER_3: { // Levels 4-6 (Advanced)
+                allowedEnemies: ['GHOUL', 'BAT', 'SHIELD', 'MAGE'],
+                trapChance: 0.25,
+                eliteChance: 0.1,
+                maxChunkComplexity: 5, // Floating, Moving
+                recoveryChance: 0.5
+            },
+            TIER_4: { // Levels 7+ (Mastery)
+                allowedEnemies: ['GHOUL', 'BAT', 'SHIELD', 'MAGE', 'KAMIKAZE'],
+                trapChance: 0.4,
+                eliteChance: 0.2, // Very high elite chance
+                maxChunkComplexity: 5,
+                recoveryChance: 0.2
+            }
+        };
 
         class LevelGenerator {
 
@@ -1454,11 +2207,19 @@
 
                 let biome = LevelGenerator.getBiome(levelNum);
 
+                // Determine Difficulty Tier
+                let tier = DIFFICULTY_TIERS.TIER_1;
+                if (levelNum >= 7) tier = DIFFICULTY_TIERS.TIER_4;
+                else if (levelNum >= 4) tier = DIFFICULTY_TIERS.TIER_3;
+                else if (levelNum >= 2) tier = DIFFICULTY_TIERS.TIER_2;
+
                 let platforms = [];
                 let spikes = [];
                 let enemies = [];
                 let movingPlats = [];
                 let crumblePlats = [];
+                let traps = [];
+                let objectives = [];
 
                 let currentX = 0;
                 let currentY = 500; // Start height
@@ -1468,87 +2229,203 @@
                 currentX += 400;
 
                 for (let i = 0; i < chunksCount; i++) {
-                    let chunkType = Math.floor(Math.random() * 6); // More options
+                    // Select Chunk Type based on Tier Complexity
+                    // Increase complexity for objectives
+                    let maxType = tier.maxChunkComplexity;
+                    if (levelNum >= 3) maxType = 7; // Allow Arena from Lvl 3
+
+                    // Define helpers inside loop or pass RNG/Tier? 
+                    // Better to define them here to access 'tier' and 'rng' and 'enemies' array.
+
+                    const spawnEnemy = (x, y) => {
+                        let type = rng.pick(tier.allowedEnemies);
+                        let e = null;
+                        if (type === 'GHOUL') e = new Ghoul(x, y);
+                        else if (type === 'BAT') e = new Bat(x, y);
+                        else if (type === 'SHIELD') e = new ShieldGoblin(x, y);
+                        else if (type === 'MAGE') e = new Mage(x, y);
+                        else if (type === 'KAMIKAZE') e = new Kamikaze(x, y);
+
+                        if (e) {
+                            // Elite Chance
+                            if (rng.next() < tier.eliteChance) e.makeElite();
+                            enemies.push(e);
+                        }
+                    };
+
+                    const spawnEncounter = (type, x, y, width) => {
+                        switch (type) {
+                            case 'PHALANX': // Shield acts as Wall for Mage
+                                let s = new ShieldGoblin(x + width / 2 - 50, y);
+                                game.enemies.push(s); enemies.push(s); // Wait, we push to 'enemies' array which is passed to Level. 
+                                // Game.startLevel sets game.enemies = level.enemies. So just push to 'enemies'.
+                                // Using 'enemies' array defined in generate
+                                enemies.push(s);
+                                enemies.push(new Mage(x + width / 2 + 100, y));
+                                break;
+                            case 'AMBUSH': // Aerial enemies over hazards
+                                enemies.push(new Bat(x + 50, y - 100));
+                                enemies.push(new Bat(x + width - 50, y - 130));
+                                break;
+                            case 'BREACH': // Aggro rush + Heavy hitter
+                                enemies.push(new Kamikaze(x + 50, y));
+                                enemies.push(new EliteGhoul(x + width - 50, y));
+                                break;
+                            default: // Fallback random (using tier allowed)
+                                if (rng.next() < 0.6) {
+                                    spawnEnemy(x + width / 2, y);
+                                }
+                        }
+                    };
+
+                    let chunkType = Math.floor(rng.next() * (maxType + 1));
+
                     // Force easier chunks for first level/first chunk
                     if (levelNum === 0 && i === 0) chunkType = 0;
-
-                    // Void Biome has more floating/moving stuff
-                    if (levelNum >= 6 && Math.random() < 0.4) chunkType = 5;
 
                     let chunkWidth = 0;
 
                     switch (chunkType) {
-                        case 0: // Flat Run
+                        case 0: // Flat
                             chunkWidth = 400;
-                            platforms.push(new Box(currentX, currentY, chunkWidth, 50));
-                            if (Math.random() > 0.5) enemies.push(new Ghoul(currentX + 200, currentY - 50));
-                            break;
+                            platforms.push(new Box(currentX, currentY, 400, 50));
 
-                        case 1: // Gap Jump (Standard or Crumbling)
-                            chunkWidth = 250;
-                            currentX += 100; // Gap
-
-                            // 30% Chance for Crumbling Platform in later levels
-                            if (levelNum > 1 && Math.random() < 0.3) {
-                                crumblePlats.push(new CrumblingPlatform(currentX, currentY, 150, 40));
+                            // Encounter: Phalanx (Tier 2+) or Breach (Tier 3+)
+                            if (levelNum >= 2 && rng.next() < 0.4) {
+                                spawnEncounter('PHALANX', currentX + 50, currentY - 50, 300);
+                            } else if (levelNum >= 5 && rng.next() < 0.3) {
+                                spawnEncounter('BREACH', currentX + 50, currentY - 50, 300);
                             } else {
-                                platforms.push(new Box(currentX, currentY, 150, 50));
+                                // Random Enemy
+                                if (rng.next() < 0.6) {
+                                    spawnEnemy(currentX + 200, currentY - 50);
+                                }
                             }
-
-                            if (levelNum > 2 && Math.random() < 0.3) enemies.push(new Mage(currentX + 50, currentY - 60));
                             break;
 
-                        case 2: // Steps Up
-                            chunkWidth = 400;
-                            platforms.push(new Box(currentX, currentY - 50, 100, 20));
-                            platforms.push(new Box(currentX + 150, currentY - 120, 100, 20));
-                            platforms.push(new Box(currentX + 300, currentY - 190, 100, 20));
-                            currentY -= 190; // Adjust 'ground'
-                            if (levelNum > 1 && Math.random() < 0.4) enemies.push(new Bat(currentX + 200, currentY - 150));
-                            else if (Math.random() < 0.3) enemies.push(new ShieldGoblin(currentX + 150, currentY - 130));
+                        case 1: // Gap (Jump)
+                            chunkWidth = 200;
+                            platforms.push(new Box(currentX, currentY, 50, 50)); // Start lip
+                            platforms.push(new Box(currentX + 150, currentY, 50, 50)); // End lip
+                            // Maybe a bat?
+                            if (levelNum >= 1 && rng.next() < 0.3) enemies.push(new Bat(currentX + 100, currentY - 100));
                             break;
 
-                        case 3: // Spikes Pit (or Lava)
+                        case 2: // Step Up
+                            chunkWidth = 300;
+                            platforms.push(new Box(currentX, currentY, 150, 50));
+                            currentY -= 100; // Go Up
+                            platforms.push(new Box(currentX + 150, currentY, 150, 50));
+                            spawnEncounter('RANDOM', currentX + 150, currentY - 50, 150);
+                            break;
+
+                        case 3: // Step Down
+                            chunkWidth = 300;
+                            platforms.push(new Box(currentX, currentY, 150, 50));
+                            currentY += 100; // Go Down
+                            platforms.push(new Box(currentX + 150, currentY, 150, 50));
+                            spawnEncounter('RANDOM', currentX + 150, currentY - 50, 150);
+                            break;
+
+                        case 4: // Spike Pit
                             chunkWidth = 500;
-                            platforms.push(new Box(currentX, currentY, 100, 50)); // Edge
+                            platforms.push(new Box(currentX, currentY, 50, 50)); // Start
+                            // Spikes
+                            spikes.push(new Box(currentX + 50, currentY + 50, 400, 20)); // Threat
+                            platforms.push(new Box(currentX + 450, currentY, 50, 50)); // End
 
-                            // If Lava Biome, we can't just put spikes, maybe a visual lava pool (just rect for now)
-                            // For now, Spikes are just spikes logic.
-                            // In Level.draw, we can draw them as lava if biome is Lava.
-                            spikes.push(new Box(currentX + 100, currentY + 40, 300, 30)); // Pit hazard
-
-                            platforms.push(new Box(currentX + 400, currentY, 100, 50)); // Landing
-                            if (Math.random() > 0.7) enemies.push(new Bat(currentX + 250, currentY - 200));
-                            if (levelNum > 3 && Math.random() < 0.3) enemies.push(new Kamikaze(currentX + 420, currentY - 50));
+                            // Encounter: Ambush (Tier 2+)
+                            if (levelNum >= 2 && rng.next() < 0.5) {
+                                spawnEncounter('AMBUSH', currentX + 50, currentY, 400);
+                            }
                             break;
 
-                        case 4: // Floating Islands
-                            chunkWidth = 600;
-                            platforms.push(new Box(currentX, currentY - 60, 120, 20));
-                            platforms.push(new Box(currentX + 200, currentY - 120, 120, 20));
-                            platforms.push(new Box(currentX + 450, currentY - 60, 120, 20));
-                            enemies.push(new Ghoul(currentX + 220, currentY - 160));
-                            if (levelNum > 2) enemies.push(new Bat(currentX + 300, currentY - 300));
-                            if (levelNum > 4 && Math.random() < 0.2) enemies.push(new Mage(currentX + 460, currentY - 100));
-                            break;
-
-                        case 5: // Moving Platform Gap
+                        case 5: // Moving Platform
                             chunkWidth = 400;
                             platforms.push(new Box(currentX, currentY, 80, 50)); // Start
-
-                            let mPlat = new MovingPlatform(currentX + 100, currentY, 100, 20, 0, 100, 0.05); // Vertical move
-                            if (Math.random() > 0.5) mPlat = new MovingPlatform(currentX + 100, currentY, 100, 20, 150, 0, 0.03); // Horizontal
-
+                            let mPlat = new MovingPlatform(currentX + 100, currentY, 100, 20, 0, 100, 0.05);
+                            if (rng.next() > 0.5) mPlat = new MovingPlatform(currentX + 100, currentY, 100, 20, 150, 0, 0.03);
                             movingPlats.push(mPlat);
-
                             platforms.push(new Box(currentX + 320, currentY, 80, 50)); // End
+                            break;
+
+                        case 6: // Challenge Room (Kill Objective)
+                            chunkWidth = 600;
+                            // Arena Style
+                            platforms.push(new Box(currentX, currentY, 600, 50)); // Floor
+                            platforms.push(new Box(currentX, currentY - 200, 20, 200)); // Wall Left
+                            platforms.push(new Box(currentX + 580, currentY - 200, 20, 200)); // Wall Right
+
+                            platforms.push(new Box(currentX + 100, currentY - 80, 100, 20));
+                            platforms.push(new Box(currentX + 400, currentY - 80, 100, 20));
+
+                            let obj = new KillChallenge(currentX + 50, currentY - 200, 500, 200, 3);
+
+                            for (let k = 0; k < 3; k++) {
+                                let eX = currentX + 100 + rng.next() * 400;
+                                let eY = currentY - 100;
+                                let type = rng.pick(tier.allowedEnemies);
+                                let enemy = null;
+
+                                // Manual instantiation for simplicity in this loop
+                                if (type === 'GHOUL') enemy = new Ghoul(eX, eY);
+                                else if (type === 'BAT') enemy = new Bat(eX, eY);
+                                else if (type === 'SHIELD') enemy = new ShieldGoblin(eX, eY);
+                                else if (type === 'MAGE') enemy = new Mage(eX, eY);
+                                else if (type === 'KAMIKAZE') enemy = new Kamikaze(eX, eY);
+
+                                if (enemy) obj.enemiesToSpawn.push(enemy);
+                            }
+                            objectives.push(obj);
+                            break;
+
+                        case 7: // Arena Gauntlet
+                            chunkWidth = 800;
+                            platforms.push(new Box(currentX, currentY, 800, 50));
+                            platforms.push(new Box(currentX, currentY - 300, 800, 50));
+                            platforms.push(new Box(currentX, currentY - 300, 50, 300));
+                            platforms.push(new Box(currentX + 750, currentY - 300, 50, 300));
+
+                            let gateL = new ArenaGate(currentX + 60, currentY - 200, 200);
+                            let gateR = new ArenaGate(currentX + 720, currentY - 200, 200);
+
+                            let arena = new ArenaController(currentX + 100, currentY - 200, 600, 200);
+                            arena.gates = [gateL, gateR];
+
+                            let diff = Math.floor(levelNum / 2) + 1;
+
+                            // Wave 1: Fodder
+                            let w1 = [];
+                            for (let k = 0; k < 2 + diff; k++) w1.push(Ghoul);
+                            arena.addWave(w1);
+
+                            // Wave 2: Mix
+                            if (levelNum >= 2) {
+                                let w2 = [];
+                                w2.push(ShieldGoblin);
+                                w2.push(Mage);
+                                w2.push(Bat);
+                                arena.addWave(w2);
+                            }
+
+                            // Wave 3: Elite
+                            if (levelNum >= 4) {
+                                let w3 = [];
+                                w3.push(EliteGhoul);
+                                arena.addWave(w3);
+                            }
+                            objectives.push(arena);
                             break;
                     }
 
-                    // Elite Loop
-                    if (enemies.length > 0 && Math.random() < 0.05 + (levelNum * 0.02)) {
-                        let last = enemies[enemies.length - 1];
-                        if (last.makeElite) last.makeElite();
+                    // Traps (15% chance independent of encounter?)
+                    if (rng.next() < tier.trapChance && levelNum > 0 && chunkType !== 6 && chunkType !== 7) {
+                        if (biome === BIOME_DATA.VOID) {
+                            traps.push(new LaserTrap(currentX + chunkWidth / 2, currentY - 100, 150, rng.next() > 0.5));
+                        } else {
+                            if (rng.next() > 0.5) traps.push(new BladeTrap(currentX + chunkWidth / 2 - 20, currentY));
+                            else traps.push(new PressurePlateTrap(currentX + chunkWidth / 2 - 15, currentY - 20));
+                        }
                     }
 
                     currentX += chunkWidth;
@@ -1558,9 +2435,10 @@
                 platforms.push(new Box(currentX + 50, currentY, 300, 50));
                 let portalPos = new Vector2(currentX + 200, currentY - 80);
 
-                let level = new Level(platforms, spikes, enemies, portalPos, biome);
+                let level = new Level(platforms, spikes, enemies, portalPos, biome, traps);
                 level.movingPlatforms = movingPlats;
                 level.crumblingPlatforms = crumblePlats;
+                level.objectives = objectives;
                 return level;
             }
         }
@@ -1584,6 +2462,7 @@
                 this.freezeFrames = 0;
                 this.floatingTexts = [];
                 this.projectiles = [];
+                this.objects = []; // For Chests, Items, etc.
 
                 // Progression
                 this.xp = 0;
@@ -1591,8 +2470,43 @@
                 this.nextLevelXp = 500;
                 this.availableUpgrades = [];
 
+                // Roguelike Modes
+                this.seed = Date.now();
+                this.gameMode = 'STANDARD'; // STANDARD, DAILY, ENDLESS
+                this.modifiers = {
+                    oneHeart: false,
+                    doubleEnemies: false,
+                    noHealing: false,
+                    endless: false
+                };
+
                 this.resize();
                 window.addEventListener('resize', () => this.resize());
+            }
+
+            setMode(mode) {
+                this.gameMode = mode;
+                this.modifiers = {
+                    oneHeart: false,
+                    doubleEnemies: false,
+                    noHealing: false,
+                    endless: false
+                };
+
+                if (mode === 'DAILY') {
+                    // Seed based on Day
+                    let d = new Date();
+                    this.seed = parseInt(`${d.getFullYear()}${d.getMonth() + 1}${d.getDate()}`);
+                    // Random modifiers based on seed?
+                    let dailyRng = new SeededRandom(this.seed);
+                    if (dailyRng.next() > 0.5) this.modifiers.doubleEnemies = true;
+                    if (dailyRng.next() > 0.7) this.modifiers.noHealing = true;
+                } else if (mode === 'ENDLESS') {
+                    this.modifiers.endless = true;
+                    this.seed = Date.now();
+                } else {
+                    this.seed = Date.now();
+                }
             }
 
             addXp(amount) {
@@ -1610,6 +2524,15 @@
                 // Pick 3 random upgrades
                 this.availableUpgrades = [];
                 let pool = [...UPGRADES];
+
+                // Allow Ability Upgrades
+                pool.push({ id: 'UNLOCK_DASH', name: 'Dash Ability', description: 'Unlock Dash (SHIFT)', icon: '>>', type: 'ACTIVE' });
+                pool.push({ id: 'UNLOCK_PARRY', name: 'Parry Ability', description: 'Unlock Parry (SHIFT)', icon: 'P', type: 'ACTIVE' });
+
+                // Filter out already equipped
+                if (this.player.activeAbility && this.player.activeAbility.name === 'Dash') pool = pool.filter(u => u.id !== 'UNLOCK_DASH');
+                if (this.player.activeAbility && this.player.activeAbility.name === 'Parry') pool = pool.filter(u => u.id !== 'UNLOCK_PARRY');
+
                 for (let i = 0; i < 3; i++) {
                     if (pool.length === 0) break;
                     let idx = Math.floor(Math.random() * pool.length);
@@ -1623,7 +2546,7 @@
                 switch (upgradeId) {
                     case 'VITALITY':
                         this.player.maxHealth++;
-                        this.player.health = this.player.maxHealth;
+                        if (!this.modifiers.noHealing) this.player.health = this.player.maxHealth;
                         break;
                     case 'STRENGTH':
                         this.player.damageMult = (this.player.damageMult || 1) + 0.5;
@@ -1638,6 +2561,12 @@
                     case 'HASTE':
                         this.player.cooldownMult = (this.player.cooldownMult || 1) * 0.8;
                         break;
+                    case 'UNLOCK_DASH':
+                        this.player.equipAbility(new DashAbility());
+                        break;
+                    case 'UNLOCK_PARRY':
+                        this.player.equipAbility(new ParryAbility());
+                        break;
                 }
                 this.state = 'PLAYING';
             }
@@ -1651,12 +2580,31 @@
 
             startLevel(idx) {
                 this.levelIndex = idx;
-                this.level = LevelGenerator.generate(idx);
+
+                // In Endless, we just keep going. But LevelGenerator expects specific index for Tier.
+                // We can cap Tier logic or let it stay hard.
+
+                let seedForLevel = this.seed + idx; // Deterministic seed Per Level
+                this.level = LevelGenerator.generate(idx, seedForLevel);
 
                 // Apply Biome Colors/Friction
                 Object.assign(COLORS, this.level.biome);
 
                 this.enemies = this.level.enemies;
+
+                // Modifier: Double Enemies
+                if (this.modifiers.doubleEnemies) {
+                    // Duplicate enemies
+                    let extra = [];
+                    this.enemies.forEach(e => {
+                        // Clone logic or just spawn new of same type nearby
+                        // Creating new is safer if we knew constructor args easily. 
+                        // Let's just spawn a Ghoul for every enemy as "Reinforcement"
+                        extra.push(new Ghoul(e.pos.x + 20, e.pos.y));
+                    });
+                    this.enemies = this.enemies.concat(extra);
+                }
+
                 this.player = new Player(100, 300);
 
                 // Keep stats if continuing
@@ -1669,10 +2617,29 @@
                     this.player.speedMult = this.playerRef.speedMult || 1;
                     this.player.reachMult = this.playerRef.reachMult || 1;
                     this.player.cooldownMult = this.playerRef.cooldownMult || 1;
+                    // Persist Ability
+                    this.player.activeAbility = this.playerRef.activeAbility;
+                } else {
+                    // New Game start
+                    if (this.modifiers.oneHeart) {
+                        this.player.maxHealth = 1;
+                        this.player.health = 1;
+                    }
                 }
+
                 this.playerRef = this.player;
                 this.particles = [];
                 this.projectiles = [];
+                this.objects = [];
+
+                // Add Objectives from level
+                if (this.level.objectives) {
+                    this.level.objectives.forEach(o => this.objects.push(o)); // Treat objectives as objects for update/draw? 
+                    // Wait, objectives need to be updated. Game.update loops objects?
+                    // Let's assume yes or add specific loop. 
+                    // Looking at Game.update, it loops `objects`.
+                }
+
                 this.state = 'PLAYING';
             }
 
@@ -1724,11 +2691,21 @@
                 this.enemies = this.enemies.filter(e => !e.markedForDeletion);
                 this.particles.forEach(p => p.update());
                 this.particles = this.particles.filter(p => !p.markedForDeletion && p.life > 0);
+                if (this.objects) this.objects.forEach(o => o.update());
 
                 // Update Platforms
                 if (this.level) {
                     this.level.movingPlatforms.forEach(p => p.update());
                     this.level.crumblingPlatforms.forEach(p => p.update());
+                    this.level.traps.forEach(t => {
+                        t.update();
+                        t.checkCollision(this.player);
+                    });
+                }
+
+                // Update Objectives
+                if (this.level && this.level.objectives) {
+                    this.level.objectives.forEach(o => o.update());
                 }
 
                 // Camera Logic (Adjusted for Zoom)
@@ -1807,6 +2784,14 @@
                     }
                 }
 
+                // Draw Traps
+                if (this.level && this.level.traps) {
+                    this.level.traps.forEach(t => t.draw(this.ctx));
+                }
+
+                // Draw Objects (Chests)
+                if (this.objects) this.objects.forEach(o => o.draw(this.ctx));
+
                 // Draw Special Platforms
                 this.level.movingPlatforms.forEach(p => p.draw(this.ctx));
                 this.level.crumblingPlatforms.forEach(p => p.draw(this.ctx));
@@ -1839,6 +2824,11 @@
                 this.enemies.forEach(e => e.draw(this.ctx));
                 this.projectiles.forEach(p => p.draw(this.ctx));
                 this.particles.forEach(pt => pt.draw(this.ctx));
+                // Draw Objectives
+                if (this.level && this.level.objectives) {
+                    this.level.objectives.forEach(o => o.draw(this.ctx));
+                }
+
                 if (this.floatingTexts) this.floatingTexts.forEach(t => t.draw(this.ctx));
 
                 this.ctx.restore();
@@ -1978,13 +2968,49 @@
                     }
                 }
 
+                // Draw HUD
                 this.ctx.fillStyle = '#fff';
-                this.ctx.font = 'bold 18px Segoe UI';
-                this.ctx.textAlign = 'right';
-                this.ctx.fillText("LVL " + (this.levelIndex + 1), 250, 50);
-                this.ctx.fillStyle = '#ccc';
-                this.ctx.font = '14px Segoe UI';
-                this.ctx.fillText("SCR " + this.score, 250, 75);
+                this.ctx.font = '20px Segoe UI';
+                this.ctx.fillText(`Score: ${this.score}`, 20, 30);
+                this.ctx.fillText(`Level: ${this.levelIndex + 1}`, 20, 60);
+
+                // Health Bar
+                this.ctx.fillStyle = '#444';
+                this.ctx.fillRect(20, 70, 150, 20);
+                this.ctx.fillStyle = '#f00';
+                this.ctx.fillRect(20, 70, 150 * (this.player.health / this.player.maxHealth), 20);
+                this.ctx.strokeStyle = '#fff';
+                this.ctx.strokeRect(20, 70, 150, 20);
+
+                // Ability UI
+                if (this.player.activeAbility) {
+                    let ab = this.player.activeAbility;
+                    let x = 190; let y = 70;
+
+                    this.ctx.fillStyle = '#222';
+                    this.ctx.fillRect(x, y, 40, 40);
+
+                    // Cooldown overlay
+                    if (ab.cooldownTimer > 0) {
+                        let p = ab.cooldownTimer / ab.maxCooldown;
+                        this.ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+                        this.ctx.fillRect(x, y + 40 * (1 - p), 40, 40 * p);
+                    }
+
+                    this.ctx.strokeStyle = ab.canTrigger() ? '#0ff' : '#666';
+                    this.ctx.lineWidth = 2;
+                    this.ctx.strokeRect(x, y, 40, 40);
+
+                    this.ctx.fillStyle = '#fff';
+                    this.ctx.font = '16px monospace';
+                    this.ctx.fillText(ab.icon, x + 12, y + 25);
+
+                    this.ctx.font = '10px Segoe UI';
+                    this.ctx.fillStyle = '#aaa';
+                    this.ctx.fillText("[SHIFT]", x + 5, y + 55);
+                }
+
+                // XP Barthis.ctx.fillText("SCR " + this.score, 250, 75);
             }
         }
 
@@ -1997,9 +3023,30 @@
             requestAnimationFrame(loop);
         }
         window.addEventListener('keydown', (e) => {
-            if (e.code === 'Enter' && (game.state !== 'PLAYING')) {
-                game.score = 0;
-                game.startLevel(0);
+            if (e.code === 'Enter') {
+                if (game.state === 'START') {
+                    game.setMode('STANDARD');
+                    game.startLevel(0);
+                    loop(); // Ensure loop is running if stopped? Actually loop runs always.
+                } else if (game.state === 'GAME_OVER') {
+                    game.player = null;
+                    game.state = 'START';
+                    game.draw(); // Redraw menu
+                }
+            }
+            if (game.state === 'START') {
+                if (e.key === 's' || e.key === 'S') {
+                    game.setMode('STANDARD');
+                    game.startLevel(0);
+                }
+                if (e.key === 'd' || e.key === 'D') {
+                    game.setMode('DAILY');
+                    game.startLevel(0);
+                }
+                if (e.key === 'e' || e.key === 'E') {
+                    game.setMode('ENDLESS');
+                    game.startLevel(0);
+                }
             }
         });
         loop();
