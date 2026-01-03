@@ -9,6 +9,11 @@
         body {
             margin: 0;
             overflow: hidden;
+
+
+
+
+
             background-color: #050505;
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
         }
@@ -275,22 +280,14 @@
             }
             if (e.code === 'ArrowUp') keyPresses['Space'] = true;
             if (e.code === 'Space') keyPresses['ArrowUp'] = true;
-            if (e.key === 't' || e.key === 'T') {
-                if (game.state === 'START') {
-                    // Cycle Skins
-                    let unlocked = game.saveData.unlockedSkins;
-                    let currentIdx = unlocked.indexOf(game.saveData.currentSkin);
-                    let nextIdx = (currentIdx + 1) % unlocked.length;
-                    let nextSkinName = unlocked[nextIdx];
-                    game.saveData.currentSkin = nextSkinName;
-                    game.skin = SKINS[nextSkinName];
-                    SaveManager.save(game.saveData);
-                }
-            }
-            if (e.key === 'Shift') {
-                if (game.state === 'PLAYING' && game.player) {
-                    game.player.triggerAbility();
-                }
+            if (e.code === 'KeyT' && game && game.state === 'START') {
+                // Cycle Skins
+                let unlocked = game.saveData.unlockedSkins;
+                let idx = unlocked.indexOf(game.saveData.currentSkin);
+                idx = (idx + 1) % unlocked.length;
+                game.saveData.currentSkin = unlocked[idx];
+                game.skin = SKINS[game.saveData.currentSkin];
+                SaveManager.save(game.saveData);
             }
         });
         window.addEventListener('keyup', (e) => { if (keys.hasOwnProperty(e.code)) keys[e.code] = false; });
@@ -476,8 +473,6 @@
                 ctx.fillRect(this.pos.x, this.pos.y, this.w, 3);
             }
         }
-
-
 
         // --- Visual Effects ---
         class FloatingText {
@@ -817,6 +812,11 @@
                         }
 
                         if (successfulHit) {
+                            game.score += 100 * (game.levelIndex + 1);
+                            game.addXp(50); // XP Gain
+                            hit = true;
+                            game.freezeFrames = 6; // Kill freeze
+                            game.floatingTexts.push(new FloatingText(enemy.pos.x + enemy.w / 2, enemy.pos.y, "+100", "#ffd700"));
                             SoundManager.playKill();
                         } else {
                             // Blocked logic handled inside takeHit
@@ -901,7 +901,6 @@
                 ctx.restore();
             }
         }
-
 
         class Projectile extends Box {
             constructor(x, y, vx, vy, owner) {
@@ -1047,7 +1046,7 @@
         class Ghoul extends Enemy {
             constructor(x, y) {
                 super(x, y, 40, 40, COLORS.ghoulBody);
-                this.hp = 3 + Math.floor(game.levelIndex * 0.2); // Base 3 (2 hits)
+                this.hp = 2 + Math.floor(game.levelIndex / 3);
                 this.speed = 1.5 + (game.levelIndex * 0.1);
                 this.dir = 1;
             }
@@ -1130,7 +1129,7 @@
         class ShieldGoblin extends Enemy {
             constructor(x, y) {
                 super(x, y, 45, 45, '#464');
-                this.hp = 4 + Math.floor(game.levelIndex * 0.4); // Base 4 (Tanky)
+                this.hp = 3 + Math.floor(game.levelIndex / 2);
                 this.speed = 0.8;
                 this.shieldUp = true;
             }
@@ -1200,7 +1199,7 @@
         class Mage extends Enemy {
             constructor(x, y) {
                 super(x, y, 35, 55, COLORS.mageBody);
-                this.hp = 3 + Math.floor(game.levelIndex * 0.3); // Base 3 (Standard)
+                this.hp = 2 + Math.floor(game.levelIndex / 3);
                 this.speed = 1.2;
                 this.cooldown = 100;
             }
@@ -1274,7 +1273,7 @@
         class Kamikaze extends Enemy {
             constructor(x, y) {
                 super(x, y, 30, 30, COLORS.kamikazeBody);
-                this.hp = 2 + Math.floor(game.levelIndex * 0.2); // Base 2, scales very slowly
+                this.hp = 1;
                 this.speed = 3.5;
                 this.exploded = false;
             }
@@ -1444,37 +1443,6 @@
             }
         }
 
-        const DIFFICULTY_TIERS = {
-            TIER_1: { // Levels 0-1 (Tutorial)
-                allowedEnemies: ['GHOUL'],
-                trapChance: 0.0,
-                eliteChance: 0.0,
-                maxChunkComplexity: 1, // Only Flat or simple Gaps
-                recoveryChance: 1.0 // Guaranteed heal
-            },
-            TIER_2: { // Levels 2-3 (Intermediate)
-                allowedEnemies: ['GHOUL', 'BAT'],
-                trapChance: 0.15,
-                eliteChance: 0.05,
-                maxChunkComplexity: 3, // Steps, Spikes
-                recoveryChance: 0.8
-            },
-            TIER_3: { // Levels 4-6 (Advanced)
-                allowedEnemies: ['GHOUL', 'BAT', 'SHIELD', 'MAGE'],
-                trapChance: 0.25,
-                eliteChance: 0.1,
-                maxChunkComplexity: 5, // Floating, Moving
-                recoveryChance: 0.5
-            },
-            TIER_4: { // Levels 7+ (Mastery)
-                allowedEnemies: ['GHOUL', 'BAT', 'SHIELD', 'MAGE', 'KAMIKAZE'],
-                trapChance: 0.4,
-                eliteChance: 0.2, // Very high elite chance
-                maxChunkComplexity: 5,
-                recoveryChance: 0.2
-            }
-        };
-
         class LevelGenerator {
 
             static getBiome(levelIndex) {
@@ -1491,19 +1459,11 @@
 
                 let biome = LevelGenerator.getBiome(levelNum);
 
-                // Determine Difficulty Tier
-                let tier = DIFFICULTY_TIERS.TIER_1;
-                if (levelNum >= 7) tier = DIFFICULTY_TIERS.TIER_4;
-                else if (levelNum >= 4) tier = DIFFICULTY_TIERS.TIER_3;
-                else if (levelNum >= 2) tier = DIFFICULTY_TIERS.TIER_2;
-
                 let platforms = [];
                 let spikes = [];
                 let enemies = [];
                 let movingPlats = [];
                 let crumblePlats = [];
-                let traps = [];
-                let objectives = [];
 
                 let currentX = 0;
                 let currentY = 500; // Start height
@@ -1513,85 +1473,87 @@
                 currentX += 400;
 
                 for (let i = 0; i < chunksCount; i++) {
-                    // Select Chunk Type based on Tier Complexity
-                    // Increase complexity for objectives
-                    let maxType = tier.maxChunkComplexity;
-                    if (levelNum >= 3) maxType = 7; // Allow Arena from Lvl 3
-
-                    // Define helpers inside loop or pass RNG/Tier? 
-                    // Better to define them here to access 'tier' and 'rng' and 'enemies' array.
-
-                    const spawnEnemy = (x, y) => {
-                        let pool = tier.allowedEnemies;
-                        let type = pool[Math.floor(Math.random() * pool.length)];
-                        let e = null;
-                        if (type === 'GHOUL') e = new Ghoul(x, y);
-                        else if (type === 'BAT') e = new Bat(x, y);
-                        else if (type === 'SHIELD') e = new ShieldGoblin(x, y);
-                        else if (type === 'MAGE') e = new Mage(x, y);
-                        else if (type === 'KAMIKAZE') e = new Kamikaze(x, y);
-
-                        if (e) {
-                            if (Math.random() < tier.eliteChance) e.makeElite();
-                            enemies.push(e);
-                        }
-                    };
-
-
-
-                    let chunkType = Math.floor(Math.random() * (maxType + 1));
-
+                    let chunkType = Math.floor(Math.random() * 6); // More options
                     // Force easier chunks for first level/first chunk
                     if (levelNum === 0 && i === 0) chunkType = 0;
+
+                    // Void Biome has more floating/moving stuff
+                    if (levelNum >= 6 && Math.random() < 0.4) chunkType = 5;
 
                     let chunkWidth = 0;
 
                     switch (chunkType) {
-                        case 0: // Flat
+                        case 0: // Flat Run
                             chunkWidth = 400;
-                            platforms.push(new Box(currentX, currentY, 400, 50));
-                            if (Math.random() < 0.6) spawnEnemy(currentX + 200, currentY - 50);
+                            platforms.push(new Box(currentX, currentY, chunkWidth, 50));
+                            if (Math.random() > 0.5) enemies.push(new Ghoul(currentX + 200, currentY - 50));
                             break;
 
-                        case 1: // Gap (Jump)
-                            chunkWidth = 200;
-                            platforms.push(new Box(currentX, currentY, 50, 50)); // Start lip
-                            platforms.push(new Box(currentX + 150, currentY, 50, 50)); // End lip
-                            if (levelNum >= 1 && Math.random() < 0.3) enemies.push(new Bat(currentX + 100, currentY - 100));
+                        case 1: // Gap Jump (Standard or Crumbling)
+                            chunkWidth = 250;
+                            currentX += 100; // Gap
+
+                            // 30% Chance for Crumbling Platform in later levels
+                            if (levelNum > 1 && Math.random() < 0.3) {
+                                crumblePlats.push(new CrumblingPlatform(currentX, currentY, 150, 40));
+                            } else {
+                                platforms.push(new Box(currentX, currentY, 150, 50));
+                            }
+
+                            if (levelNum > 2 && Math.random() < 0.3) enemies.push(new Mage(currentX + 50, currentY - 60));
                             break;
 
-                        case 2: // Step Up
-                            chunkWidth = 300;
-                            platforms.push(new Box(currentX, currentY, 150, 50));
-                            currentY -= 100; // Go Up
-                            platforms.push(new Box(currentX + 150, currentY, 150, 50));
-                            if (Math.random() < 0.6) spawnEnemy(currentX + 200, currentY - 50);
+                        case 2: // Steps Up
+                            chunkWidth = 400;
+                            platforms.push(new Box(currentX, currentY - 50, 100, 20));
+                            platforms.push(new Box(currentX + 150, currentY - 120, 100, 20));
+                            platforms.push(new Box(currentX + 300, currentY - 190, 100, 20));
+                            currentY -= 190; // Adjust 'ground'
+                            if (levelNum > 1 && Math.random() < 0.4) enemies.push(new Bat(currentX + 200, currentY - 150));
+                            else if (Math.random() < 0.3) enemies.push(new ShieldGoblin(currentX + 150, currentY - 130));
                             break;
 
-                        case 3: // Step Down
-                            chunkWidth = 300;
-                            platforms.push(new Box(currentX, currentY, 150, 50));
-                            currentY += 100; // Go Down
-                            platforms.push(new Box(currentX + 150, currentY, 150, 50));
-                            if (Math.random() < 0.6) spawnEnemy(currentX + 200, currentY - 50);
-                            break;
-
-                        case 4: // Spike Pit
+                        case 3: // Spikes Pit (or Lava)
                             chunkWidth = 500;
-                            platforms.push(new Box(currentX, currentY, 50, 50)); // Start
-                            spikes.push(new Box(currentX + 50, currentY + 50, 400, 20)); // Threat
-                            platforms.push(new Box(currentX + 450, currentY, 50, 50)); // End
-                            if (levelNum >= 1 && Math.random() < 0.4) enemies.push(new Bat(currentX + 250, currentY - 100));
+                            platforms.push(new Box(currentX, currentY, 100, 50)); // Edge
+
+                            // If Lava Biome, we can't just put spikes, maybe a visual lava pool (just rect for now)
+                            // For now, Spikes are just spikes logic.
+                            // In Level.draw, we can draw them as lava if biome is Lava.
+                            spikes.push(new Box(currentX + 100, currentY + 40, 300, 30)); // Pit hazard
+
+                            platforms.push(new Box(currentX + 400, currentY, 100, 50)); // Landing
+                            if (Math.random() > 0.7) enemies.push(new Bat(currentX + 250, currentY - 200));
+                            if (levelNum > 3 && Math.random() < 0.3) enemies.push(new Kamikaze(currentX + 420, currentY - 50));
                             break;
 
-                        case 5: // Moving Platform
+                        case 4: // Floating Islands
+                            chunkWidth = 600;
+                            platforms.push(new Box(currentX, currentY - 60, 120, 20));
+                            platforms.push(new Box(currentX + 200, currentY - 120, 120, 20));
+                            platforms.push(new Box(currentX + 450, currentY - 60, 120, 20));
+                            enemies.push(new Ghoul(currentX + 220, currentY - 160));
+                            if (levelNum > 2) enemies.push(new Bat(currentX + 300, currentY - 300));
+                            if (levelNum > 4 && Math.random() < 0.2) enemies.push(new Mage(currentX + 460, currentY - 100));
+                            break;
+
+                        case 5: // Moving Platform Gap
                             chunkWidth = 400;
                             platforms.push(new Box(currentX, currentY, 80, 50)); // Start
-                            let mPlat = new MovingPlatform(currentX + 100, currentY, 100, 20, 0, 100, 0.05);
-                            if (Math.random() > 0.5) mPlat = new MovingPlatform(currentX + 100, currentY, 100, 20, 150, 0, 0.03);
+
+                            let mPlat = new MovingPlatform(currentX + 100, currentY, 100, 20, 0, 100, 0.05); // Vertical move
+                            if (Math.random() > 0.5) mPlat = new MovingPlatform(currentX + 100, currentY, 100, 20, 150, 0, 0.03); // Horizontal
+
                             movingPlats.push(mPlat);
+
                             platforms.push(new Box(currentX + 320, currentY, 80, 50)); // End
                             break;
+                    }
+
+                    // Elite Loop
+                    if (enemies.length > 0 && Math.random() < 0.05 + (levelNum * 0.02)) {
+                        let last = enemies[enemies.length - 1];
+                        if (last.makeElite) last.makeElite();
                     }
 
                     currentX += chunkWidth;
@@ -1607,7 +1569,6 @@
                 return level;
             }
         }
-
 
         // --- Game Manager ---
         class Game {
@@ -1628,7 +1589,6 @@
                 this.freezeFrames = 0;
                 this.floatingTexts = [];
                 this.projectiles = [];
-                this.objects = []; // For Chests, Items, etc.
 
                 // Progression
                 this.xp = 0;
@@ -1639,9 +1599,6 @@
                 this.resize();
                 window.addEventListener('resize', () => this.resize());
             }
-
-
-
 
             addXp(amount) {
                 this.xp += amount;
@@ -1658,7 +1615,6 @@
                 // Pick 3 random upgrades
                 this.availableUpgrades = [];
                 let pool = [...UPGRADES];
-
                 for (let i = 0; i < 3; i++) {
                     if (pool.length === 0) break;
                     let idx = Math.floor(Math.random() * pool.length);
@@ -1678,6 +1634,7 @@
                         this.player.damageMult = (this.player.damageMult || 1) + 0.5;
                         break;
                     case 'AGILITY':
+                        // We need to modify base speed, maybe add a multiplier to Player class
                         this.player.speedMult = (this.player.speedMult || 1) * 1.2;
                         break;
                     case 'REACH':
@@ -1710,23 +1667,23 @@
                 // Keep stats if continuing
                 if (this.state === 'PLAYING' && this.playerRef) {
                     this.player.health = this.playerRef.health;
-                    this.player.maxHealth = this.playerRef.maxHealth;
+                    this.player.maxHealth = this.playerRef.maxHealth; // Persist Max HP
                     this.player.score = this.score;
+                    // Persist Upgrades
                     this.player.damageMult = this.playerRef.damageMult || 1;
                     this.player.speedMult = this.playerRef.speedMult || 1;
                     this.player.reachMult = this.playerRef.reachMult || 1;
                     this.player.cooldownMult = this.playerRef.cooldownMult || 1;
                 }
-
                 this.playerRef = this.player;
                 this.particles = [];
                 this.projectiles = [];
-                this.objects = [];
                 this.state = 'PLAYING';
             }
 
             nextLevel() {
-                this.score += 100 + (this.levelIndex * 20);
+                if (this.player.health < this.player.maxHealth) this.player.health++;
+                this.score += 500;
                 this.startLevel(this.levelIndex + 1);
             }
 
@@ -1772,7 +1729,6 @@
                 this.enemies = this.enemies.filter(e => !e.markedForDeletion);
                 this.particles.forEach(p => p.update());
                 this.particles = this.particles.filter(p => !p.markedForDeletion && p.life > 0);
-                if (this.objects) this.objects.forEach(o => o.update());
 
                 // Update Platforms
                 if (this.level) {
@@ -1856,14 +1812,6 @@
                     }
                 }
 
-                // Draw Traps
-                if (this.level && this.level.traps) {
-                    this.level.traps.forEach(t => t.draw(this.ctx));
-                }
-
-                // Draw Objects (Chests)
-                if (this.objects) this.objects.forEach(o => o.draw(this.ctx));
-
                 // Draw Special Platforms
                 this.level.movingPlatforms.forEach(p => p.draw(this.ctx));
                 this.level.crumblingPlatforms.forEach(p => p.draw(this.ctx));
@@ -1896,11 +1844,6 @@
                 this.enemies.forEach(e => e.draw(this.ctx));
                 this.projectiles.forEach(p => p.draw(this.ctx));
                 this.particles.forEach(pt => pt.draw(this.ctx));
-                // Draw Objectives
-                if (this.level && this.level.objectives) {
-                    this.level.objectives.forEach(o => o.draw(this.ctx));
-                }
-
                 if (this.floatingTexts) this.floatingTexts.forEach(t => t.draw(this.ctx));
 
                 this.ctx.restore();
@@ -2040,44 +1983,30 @@
                     }
                 }
 
-                // Draw HUD
                 this.ctx.fillStyle = '#fff';
-                this.ctx.font = '20px Segoe UI';
-                this.ctx.fillText(`Score: ${this.score}`, 20, 30);
-                this.ctx.fillText(`Level: ${this.levelIndex + 1}`, 20, 60);
-
-                // Health Bar
-                this.ctx.fillStyle = '#444';
-                this.ctx.fillRect(20, 70, 150, 20);
-                this.ctx.fillStyle = '#f00';
-                this.ctx.fillRect(20, 70, 150 * (this.player.health / this.player.maxHealth), 20);
-                this.ctx.strokeStyle = '#fff';
-                this.ctx.strokeRect(20, 70, 150, 20);
-
-                // Score
-                this.ctx.fillStyle = COLORS.text;
-                this.ctx.font = '24px Segoe UI';
-                this.ctx.fillText("SCR " + this.score, 20, 40);
+                this.ctx.font = 'bold 18px Segoe UI';
+                this.ctx.textAlign = 'right';
+                this.ctx.fillText("LVL " + (this.levelIndex + 1), 250, 50);
+                this.ctx.fillStyle = '#ccc';
+                this.ctx.font = '14px Segoe UI';
+                this.ctx.fillText("SCR " + this.score, 250, 75);
             }
         }
 
         const game = new Game(document.getElementById('gameCanvas'));
+        game.startLevel(0); // Initialize here instead
 
         function loop() {
             game.update();
             game.draw();
             requestAnimationFrame(loop);
         }
-
         window.addEventListener('keydown', (e) => {
-            if (e.code === 'Enter' || e.code === 'Space') {
-                if (game.state === 'START' || game.state === 'GAMEOVER') {
-                    game.startLevel(0);
-                    game.state = 'PLAYING';
-                }
+            if (e.code === 'Enter' && (game.state !== 'PLAYING')) {
+                game.score = 0;
+                game.startLevel(0);
             }
         });
-
         loop();
     </script>
 </body>
